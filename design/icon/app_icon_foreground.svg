@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="leftPage" x1="15%" y1="10%" x2="90%" y2="95%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#EAF2EE"/>
+    </linearGradient>
+    <linearGradient id="rightPage" x1="0%" y1="5%" x2="95%" y2="95%">
+      <stop offset="0%" stop-color="#328A73"/>
+      <stop offset="55%" stop-color="#236B58"/>
+      <stop offset="100%" stop-color="#174D3F"/>
+    </linearGradient>
+    <linearGradient id="foldRibbon" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F1AA61"/>
+      <stop offset="100%" stop-color="#CB7725"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 柔和多层矢量外投影（纯SVG，100%兼容所有渲染器） -->
+  <path d="M 512 332 C 452 302, 368 296, 286 308 C 264 311, 250 328, 250 350 L 250 692 C 250 714, 267 729, 289 726 C 372 715, 452 722, 512 754 C 572 722, 652 715, 735 726 C 757 729, 774 714, 774 692 L 774 350 C 774 328, 760 311, 738 308 C 656 296, 572 302, 512 332 Z"
+        fill="#13342B" fill-opacity="0.06" transform="translate(0, 14) scale(1.02, 1.02)" style="transform-origin:center"/>
+  <path d="M 512 328 C 452 298, 368 292, 286 304 C 264 307, 250 324, 250 346 L 250 688 C 250 710, 267 725, 289 722 C 372 711, 452 718, 512 750 C 572 718, 652 711, 735 722 C 757 725, 774 710, 774 688 L 774 346 C 774 324, 760 307, 738 304 C 656 292, 572 298, 512 328 Z"
+        fill="#13342B" fill-opacity="0.11"/>
+
+  <!-- 左页：温润素玉纸感书页 -->
+  <path d="M 512 318
+           C 452 288, 368 282, 286 294
+           C 264 297, 250 314, 250 336
+           L 250 676
+           C 250 698, 267 713, 289 710
+           C 372 699, 452 706, 512 738
+           Z"
+        fill="url(#leftPage)"
+        stroke="#D4E5DD"
+        stroke-width="3"/>
+
+  <!-- 右页：宋瓷天青主书页 -->
+  <path d="M 512 318
+           C 572 288, 656 282, 738 294
+           C 760 297, 774 314, 774 336
+           L 774 676
+           C 774 698, 757 713, 735 710
+           C 652 699, 572 706, 512 738
+           Z"
+        fill="url(#rightPage)"/>
+
+  <!-- 书页下方立体厚页边缘高光 -->
+  <path d="M 262 690 C 350 678, 438 686, 512 720" fill="none" stroke="#FFFFFF" stroke-opacity="0.7" stroke-width="4" stroke-linecap="round"/>
+  <path d="M 512 720 C 586 686, 674 678, 762 690" fill="none" stroke="#10382D" stroke-opacity="0.35" stroke-width="4" stroke-linecap="round"/>
+
+  <!-- 中缝微柔光泽线 -->
+  <path d="M 512 318 L 512 738" stroke="#123A2F" stroke-opacity="0.35" stroke-width="5" stroke-linecap="round"/>
+  <path d="M 508 320 L 508 734" stroke="#FFFFFF" stroke-opacity="0.80" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- 左页极简排印微痕 -->
+  <line x1="306" y1="392" x2="450" y2="392" stroke="#236B58" stroke-opacity="0.22" stroke-width="12" stroke-linecap="round"/>
+  <line x1="306" y1="444" x2="460" y2="444" stroke="#236B58" stroke-opacity="0.18" stroke-width="12" stroke-linecap="round"/>
+  <line x1="306" y1="496" x2="424" y2="496" stroke="#236B58" stroke-opacity="0.15" stroke-width="12" stroke-linecap="round"/>
+  <line x1="306" y1="548" x2="448" y2="548" stroke="#236B58" stroke-opacity="0.12" stroke-width="12" stroke-linecap="round"/>
+
+  <!-- 右页顶部微光棱线 -->
+  <path d="M 546 356 C 600 338, 666 336, 728 344" fill="none" stroke="#FFFFFF" stroke-opacity="0.28" stroke-width="5" stroke-linecap="round"/>
+
+  <!-- 暖珀金微弧书签投影与折角 -->
+  <path d="M 632 292 L 704 296 L 704 432 C 704 442, 692 448, 684 442 L 668 427 L 652 442 C 644 448, 632 442, 632 432 Z"
+        fill="#0D2921" fill-opacity="0.22"/>
+  <path d="M 636 286 L 708 290 L 708 424 C 708 434, 696 440, 688 434 L 672 419 L 656 434 C 648 440, 636 434, 636 424 Z"
+        fill="url(#foldRibbon)"/>
+  <path d="M 644 294 L 700 297" stroke="#FFF4E5" stroke-opacity="0.72" stroke-width="3.5" stroke-linecap="round"/>
+</svg>
