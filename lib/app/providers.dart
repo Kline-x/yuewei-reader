@@ -7,6 +7,8 @@ import '../core/storage/chapter_file_store.dart';
 import '../design_system/components/single_swipe_tile.dart';
 import '../design_system/tokens/soft_tokens.dart';
 import '../features/download/download_manager.dart';
+import '../features/local_import/data/local_import_service.dart';
+import '../features/local_import/wifi/wifi_transfer_server.dart';
 import '../features/shelf/data/shelf_repository.dart';
 import '../features/sources/data/source_repository.dart';
 import '../features/sources/engine/source_crawler_service.dart';
@@ -55,6 +57,22 @@ final shelfRepositoryProvider = Provider<ShelfRepository>((ref) {
     fileStore: ref.watch(chapterFileStoreProvider),
     downloadManager: ref.watch(downloadManagerProvider),
   );
+});
+
+final localImportServiceProvider = Provider<LocalImportService>((ref) {
+  return LocalImportService(
+    db: ref.watch(appDatabaseProvider),
+    fileStore: ref.watch(chapterFileStoreProvider),
+  );
+});
+
+final wifiTransferServerProvider = Provider<WifiTransferServer>((ref) {
+  final server = WifiTransferServer(
+    localImportService: ref.watch(localImportServiceProvider),
+    sourceRepository: ref.watch(sourceRepositoryProvider),
+  );
+  ref.onDispose(() => server.dispose());
+  return server;
 });
 
 @immutable

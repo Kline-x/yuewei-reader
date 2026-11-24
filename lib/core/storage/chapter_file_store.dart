@@ -2,7 +2,10 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
-/// 沙盒冷章节正文异步存储服务（严格防路径穿越，纯异步 I/O）
+/// 本地导入书籍统一的 sourceId 常量（与在线书源严格隔离）
+const String kLocalBookSourceId = 'local_file';
+
+/// 沙盒冷章节正文与本地封面异步存储服务（严格防路径穿越，纯异步 I/O）
 class ChapterFileStore {
   ChapterFileStore({Future<Directory> Function()? rootDirProvider})
       : _rootDirProvider = rootDirProvider ?? getApplicationDocumentsDirectory;
@@ -81,6 +84,72 @@ class ChapterFileStore {
     if (await root.exists()) {
       await root.delete(recursive: true);
       await root.create(recursive: true);
+    }
+  }
+
+  /// 仅清理非本地导入书籍的离线章节缓存（保留 keepBookIds 对应目录）
+  Future<void> clearNonLocalCaches(Set<String> keepBookIds) async {
+    final root = await _chaptersRoot();
+    if (!await root.exists()) return;
+    final keepDirs = keepBookIds.map(safeBookDirName).toSet();
+    await for (final entity in root.list(followLinks: false)) {
+      if (entity is Directory && !keepDirs.contains(p.basename(entity.path))) {
+        await entity.delete(recursive: true);
+      }
+    }
+  }
+
+  Future<Directory> _coversRoot() async {
+    final base = await _rootDirProvider();
+    final dir = Directory(p.join(base.path, 'yuewei_covers'));
+    if (!await dir.exists()) {
+      await dir.create(recursive: true);
+    }
+    return dir;
+  }
+
+  Future<Directory> _bookCoverDir(String bookId) async {
+    final root = await _coversRoot();
+    final dir = Directory(p.join(root.path, safeBookDirName(bookId)));
+    if (!p.isWithin(root.path, dir.path)) {
+      throw ArgumentError('非法封面目录标识: $bookId');
+    }
+    return dir;
+  }
+
+  static String _sanitizeCoverExt(String ext) {
+    final lower = ext.trim().toLowerCase();
+    final dotExt = lower.startsWith('.') ? lower : '.$lower';
+    if (RegExp(r'^\.(jpg|jpeg|png|webp|gif)$').hasMatch(dotExt)) {
+      return dotExt;
+    }
+    return '.jpg';
+  }
+
+  /// 写入本地提取的书籍封面至 `yuewei_covers/<safeBookDir>/cover<ext>`
+  Future<String> saveBookCoverBytes(
+    String bookId,
+    List<int> bytes, {
+    String ext = '.jpg',
+  }) async {
+    final dir = await _bookCoverDir(bookId);
+    if (await dir.exists()) {
+      await dir.delete(recursive: true);
+    }
+    await dir.create(recursive: true);
+    final file = File(p.join(dir.path, 'cover${_sanitizeCoverExt(ext)}'));
+    if (!p.isWithin(dir.path, file.path)) {
+      throw ArgumentError('非法封面文件路径: $bookId');
+    }
+    await file.writeAsBytes(bytes, flush: true);
+    return file.path;
+  }
+
+  /// 删除单本书本地提取的封面目录
+  Future<void> deleteBookCover(String bookId) async {
+    final dir = await _bookCoverDir(bookId);
+    if (await dir.exists()) {
+      await dir.delete(recursive: true);
     }
   }
 }

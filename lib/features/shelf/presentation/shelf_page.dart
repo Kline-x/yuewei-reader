@@ -3,11 +3,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../app/providers.dart';
 import '../../../core/database/app_database.dart';
+import '../../../core/storage/chapter_file_store.dart';
 import '../../../design_system/components/empty_error_view.dart';
+import '../../../design_system/components/soft_button.dart';
 import '../../../design_system/feedback/app_feedback.dart';
 import '../../../design_system/tokens/soft_metrics.dart';
 import '../../../design_system/tokens/soft_tokens.dart';
 import '../data/shelf_repository.dart';
+import '../data/shelf_update_checker.dart';
 import 'shelf_book_action_sheet.dart';
 import 'shelf_book_cards.dart';
 import 'shelf_header_sections.dart';
@@ -24,6 +27,7 @@ class _ShelfPageState extends ConsumerState<ShelfPage>
     with WidgetsBindingObserver {
   ShelfSortMode _sortMode = ShelfSortMode.lastRead;
   bool _isGridView = false;
+  bool _checkingUpdates = false;
 
   @override
   void initState() {
@@ -43,6 +47,11 @@ class _ShelfPageState extends ConsumerState<ShelfPage>
     if (state != AppLifecycleState.resumed) {
       ref.read(swipeCoordinatorProvider).closeAll();
     }
+  }
+
+  void _go(String route, {bool tab = false}) {
+    AppFeedback.dismissSnackBar(context);
+    tab ? context.go(route) : context.push(route);
   }
 
   Future<void> _restorePrefs() async {
@@ -106,6 +115,38 @@ class _ShelfPageState extends ConsumerState<ShelfPage>
     );
   }
 
+  Future<void> _checkShelfUpdates() async {
+    if (_checkingUpdates) return;
+    _checkingUpdates = true;
+    try {
+      final db = ref.read(appDatabaseProvider);
+      final books = await db.getShelfBooks();
+      final hasOnline = books.any(
+        (b) => b.sourceId != kLocalBookSourceId && b.bookUrl.trim().isNotEmpty,
+      );
+      if (!hasOnline) {
+        if (mounted) AppFeedback.showToast(context, '当前书架暂无在线连载书');
+        return;
+      }
+      final checker = ShelfUpdateChecker(
+        db: db,
+        sourceRepo: ref.read(sourceRepositoryProvider),
+        crawler: ref.read(crawlerServiceProvider),
+      );
+      final res = await checker.checkAll();
+      if (!mounted) return;
+      if (res.updated > 0) {
+        AppFeedback.showToast(context, '检查完成 · 发现 ${res.updated} 部更新');
+      } else if (res.checked == 0) {
+        AppFeedback.showToast(context, '检查失败，请确认网络或书源状态', isError: true);
+      } else {
+        AppFeedback.showToast(context, '已是最新章节');
+      }
+    } finally {
+      _checkingUpdates = false;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final tokens = SoftTokens.of(context);
@@ -120,16 +161,22 @@ class _ShelfPageState extends ConsumerState<ShelfPage>
           final rawBooks = booksSnap.data ?? const <Book>[];
           final books = ShelfRepository.sortBooks(rawBooks, _sortMode);
 
-          return CustomScrollView(
-            slivers: [
-              SliverToBoxAdapter(
-                child: ShelfHeaderBar(
-                  isGridView: _isGridView,
-                  onTapSearch: () => context.go('/discover'),
-                  onTapSources: () => context.push('/sources'),
-                  onToggleView: _toggleGridMode,
+          return RefreshIndicator(
+            color: tokens.accent,
+            backgroundColor: tokens.card,
+            onRefresh: _checkShelfUpdates,
+            child: CustomScrollView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              slivers: [
+                SliverToBoxAdapter(
+                  child: ShelfHeaderBar(
+                    isGridView: _isGridView,
+                    onTapSearch: () => _go('/discover', tab: true),
+                    onTapImport: () => _go('/import'),
+                    onTapSources: () => _go('/sources'),
+                    onToggleView: _toggleGridMode,
+                  ),
                 ),
-              ),
               SliverToBoxAdapter(
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: SoftSpacing.xl),
@@ -166,12 +213,24 @@ class _ShelfPageState extends ConsumerState<ShelfPage>
                     padding: const EdgeInsets.only(
                       bottom: SoftSpacing.dockClearance,
                     ),
-                    child: EmptyErrorView(
-                      icon: Icons.auto_stories_outlined,
-                      title: '书架空空如也',
-                      description: '去探索书海搜寻心仪小说，支持多源聚合与全本离线缓存。',
-                      actionLabel: '探索书海',
-                      onAction: () => context.go('/discover'),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        EmptyErrorView(
+                          icon: Icons.auto_stories_outlined,
+                          title: '书架空空如也',
+                          description: '去探索书海搜寻心仪小说，或直接导入本地 TXT / EPUB 电子书。',
+                          actionLabel: '探索书海',
+                          onAction: () => _go('/discover', tab: true),
+                        ),
+                        SoftButton(
+                          label: '导入本地藏书',
+                          icon: Icons.drive_folder_upload_outlined,
+                          tone: SoftButtonTone.tonal,
+                          compact: true,
+                          onPressed: () => _go('/import'),
+                        ),
+                      ],
                     ),
                   ),
                 )
@@ -196,7 +255,7 @@ class _ShelfPageState extends ConsumerState<ShelfPage>
                         final book = books[i];
                         return ShelfGridBookCard(
                           book: book,
-                          onTapRead: () => context.push('/reader/${book.id}'),
+                          onTapRead: () => _go('/reader/${book.id}'),
                           onOpenActions: () => _openBookMenu(book),
                         );
                       },
@@ -219,7 +278,7 @@ class _ShelfPageState extends ConsumerState<ShelfPage>
                         return ShelfListBookCard(
                           book: book,
                           coordinator: coordinator,
-                          onTapRead: () => context.push('/reader/${book.id}'),
+                          onTapRead: () => _go('/reader/${book.id}'),
                           onOpenActions: () => _openBookMenu(book),
                           onSwipeRemove: () => _removeBookWithUndo(book),
                         );
@@ -228,7 +287,8 @@ class _ShelfPageState extends ConsumerState<ShelfPage>
                     ),
                   ),
                 ),
-            ],
+              ],
+            ),
           );
         },
       ),

@@ -29,6 +29,8 @@ class ReaderBodyView extends StatelessWidget {
     required this.bookTitle,
     required this.chapterTitle,
     required this.inShelf,
+    this.isBookmarked = false,
+    this.isLocalBook = false,
     required this.onRetry,
     required this.onToggleMenu,
     required this.onCommitNext,
@@ -37,11 +39,14 @@ class ReaderBodyView extends StatelessWidget {
     required this.onRequestPrevChapter,
     required this.onScrollChapterProgress,
     required this.onBack,
+    required this.onToggleBookmark,
     required this.onOpenSource,
     required this.onAddToShelf,
     required this.onOpenDownload,
     required this.onJumpChapter,
     required this.onOpenCatalog,
+    required this.onOpenBookmarks,
+    required this.onOpenSearch,
     required this.onToggleDark,
     required this.onOpenTypography,
   });
@@ -66,6 +71,8 @@ class ReaderBodyView extends StatelessWidget {
   final String bookTitle;
   final String chapterTitle;
   final bool inShelf;
+  final bool isBookmarked;
+  final bool isLocalBook;
   final VoidCallback onRetry;
   final VoidCallback onToggleMenu;
   final VoidCallback onCommitNext;
@@ -74,11 +81,14 @@ class ReaderBodyView extends StatelessWidget {
   final VoidCallback onRequestPrevChapter;
   final void Function(int chapterIndex, int charOffset) onScrollChapterProgress;
   final VoidCallback onBack;
+  final VoidCallback onToggleBookmark;
   final VoidCallback onOpenSource;
   final VoidCallback onAddToShelf;
   final VoidCallback onOpenDownload;
   final ValueChanged<int> onJumpChapter;
   final VoidCallback onOpenCatalog;
+  final VoidCallback onOpenBookmarks;
+  final VoidCallback onOpenSearch;
   final VoidCallback onToggleDark;
   final VoidCallback onOpenTypography;
 
@@ -129,7 +139,10 @@ class ReaderBodyView extends StatelessWidget {
             bookTitle: bookTitle,
             chapterTitle: chapterTitle,
             inShelf: inShelf,
+            isBookmarked: isBookmarked,
+            isLocalBook: isLocalBook,
             onBack: onBack,
+            onToggleBookmark: onToggleBookmark,
             onOpenSource: onOpenSource,
             onAddToShelf: onAddToShelf,
             onOpenDownload: onOpenDownload,
@@ -142,7 +155,8 @@ class ReaderBodyView extends StatelessWidget {
             chapterTitles: chapterTitles,
             onJumpChapter: onJumpChapter,
             onOpenCatalog: onOpenCatalog,
-            onOpenSource: onOpenSource,
+            onOpenBookmarks: onOpenBookmarks,
+            onOpenSearch: onOpenSearch,
             onToggleDark: onToggleDark,
             onOpenTypography: onOpenTypography,
           ),

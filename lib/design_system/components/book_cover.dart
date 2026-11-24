@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import '../tokens/soft_metrics.dart';
@@ -33,8 +34,12 @@ class BookCover extends StatelessWidget {
   Widget build(BuildContext context) {
     final palette =
         _coverGradients[title.hashCode.abs() % _coverGradients.length];
-    final hasNetUrl = coverUrl != null &&
-        (coverUrl!.startsWith('http://') || coverUrl!.startsWith('https://'));
+    final url = coverUrl?.trim() ?? '';
+    final hasNetUrl = url.startsWith('http://') || url.startsWith('https://');
+    final isLocalFile = url.startsWith('/') || url.startsWith('file://');
+    final localPath = url.startsWith('file://')
+        ? (Uri.tryParse(url)?.toFilePath() ?? url.substring(7))
+        : url;
 
     return Container(
       width: width,
@@ -54,9 +59,15 @@ class BookCover extends StatelessWidget {
         fit: StackFit.expand,
         children: [
           _buildProceduralCover(palette),
-          if (hasNetUrl)
+          if (isLocalFile && localPath.isNotEmpty)
+            Image.file(
+              File(localPath),
+              fit: BoxFit.cover,
+              errorBuilder: (_, _, _) => const SizedBox.shrink(),
+            )
+          else if (hasNetUrl)
             CachedNetworkImage(
-              imageUrl: coverUrl!,
+              imageUrl: url,
               fit: BoxFit.cover,
               fadeInDuration: const Duration(milliseconds: 200),
               errorWidget: (_, _, _) => const SizedBox.shrink(),

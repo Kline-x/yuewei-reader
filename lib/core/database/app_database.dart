@@ -1,5 +1,6 @@
 import 'package:drift/drift.dart';
 import 'package:drift_flutter/drift_flutter.dart';
+import '../storage/chapter_file_store.dart';
 import 'tables.dart';
 
 part 'app_database.g.dart';
@@ -13,13 +14,14 @@ part 'app_database.g.dart';
   ReadingSessions,
   SearchHistory,
   AppPreferences,
+  Bookmarks,
 ])
 class AppDatabase extends _$AppDatabase {
   AppDatabase([QueryExecutor? executor])
       : super(executor ?? _openConnection());
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -28,6 +30,10 @@ class AppDatabase extends _$AppDatabase {
           if (from < 2) {
             await m.addColumn(books, books.latestChapterTitle);
             await m.addColumn(books, books.lastUpdateTime);
+          }
+          if (from < 3) {
+            await m.addColumn(books, books.hasUnreadUpdate);
+            await m.createTable(bookmarks);
           }
         },
       );
@@ -168,11 +174,28 @@ class AppDatabase extends _$AppDatabase {
         );
   }
 
-  /// 实时监听已缓存总字节数（全库聚合）
+  /// 更新书籍未读更新徽标状态
+  Future<void> setBookUnreadUpdate(String bookId, bool hasUpdate) async {
+    await (update(books)..where((t) => t.id.equals(bookId))).write(
+      BooksCompanion(hasUnreadUpdate: Value(hasUpdate)),
+    );
+  }
+
+  /// 实时监听已缓存总字节数（仅统计非本地导入书籍的在线缓存字节）
   Stream<int> watchTotalCachedBytes() {
-    return (select(chapters)..where((t) => t.isCached.equals(true)))
-        .watch()
-        .map((rows) => rows.fold<int>(0, (sum, r) => sum + r.cachedBytes));
+    final query = select(chapters).join([
+      innerJoin(books, books.id.equalsExp(chapters.bookId)),
+    ])
+      ..where(
+        chapters.isCached.equals(true) &
+            books.sourceId.equals(kLocalBookSourceId).not(),
+      );
+    return query.watch().map(
+          (rows) => rows.fold<int>(
+            0,
+            (sum, row) => sum + row.readTable(chapters).cachedBytes,
+          ),
+        );
   }
 
   /// 监听单本书已缓存章数及字节数

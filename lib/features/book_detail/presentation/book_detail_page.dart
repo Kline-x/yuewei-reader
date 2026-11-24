@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../app/providers.dart';
 import '../../../core/database/app_database.dart';
+import '../../../core/storage/chapter_file_store.dart';
 import '../../../design_system/components/ambient_background.dart';
 import '../../../design_system/components/empty_error_view.dart';
 import '../../../design_system/components/soft_button.dart';
@@ -72,10 +73,10 @@ class _BookDetailPageState extends ConsumerState<BookDetailPage> {
       if (!mounted || req != _loadEpoch) return;
 
       final currentBook = local.book;
-      if (currentBook != null && local.chapters.isNotEmpty) {
+      if (currentBook != null &&
+          (local.chapters.isNotEmpty || currentBook.sourceId == kLocalBookSourceId)) {
         final needBgRefresh =
-            BookDetailLoader.needsMetaRepair(currentBook) &&
-                !_didAutoRefreshOnce;
+            BookDetailLoader.needsMetaRepair(currentBook) && !_didAutoRefreshOnce;
         setState(() {
           _book = currentBook;
           _chapters = local.chapters;
@@ -198,6 +199,7 @@ class _BookDetailPageState extends ConsumerState<BookDetailPage> {
   Widget build(BuildContext context) {
     final tokens = SoftTokens.of(context);
     final book = _book;
+    final isLocal = book != null && book.sourceId == kLocalBookSourceId;
     return Scaffold(
       body: AmbientBackground(
         child: SafeArea(
@@ -213,19 +215,19 @@ class _BookDetailPageState extends ConsumerState<BookDetailPage> {
                       icon: Icon(Icons.arrow_back_ios_new_rounded, size: 19.0, color: tokens.textPrimary),
                     ),
                     const Spacer(),
-                    if (book != null) ...[
+                    if (book != null && isLocal)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
+                        decoration: BoxDecoration(color: tokens.accentSoft, borderRadius: BorderRadius.circular(SoftRadius.pill)),
+                        child: Text('本地藏书', style: SoftTypography.caption.copyWith(color: tokens.accent, fontWeight: FontWeight.w700)),
+                      )
+                    else if (book != null) ...[
                       IconButton(
                         tooltip: '刷新书籍信息',
                         constraints: const BoxConstraints(minWidth: 40.0, minHeight: 40.0),
-                        onPressed: _refreshingMeta
-                            ? null
-                            : () => _refreshFromNetwork(existing: book, manual: true),
+                        onPressed: _refreshingMeta ? null : () => _refreshFromNetwork(existing: book, manual: true),
                         icon: _refreshingMeta
-                            ? SizedBox(
-                                width: 16.0,
-                                height: 16.0,
-                                child: CircularProgressIndicator(strokeWidth: 2.0, color: tokens.accent),
-                              )
+                            ? SizedBox(width: 16.0, height: 16.0, child: CircularProgressIndicator(strokeWidth: 2.0, color: tokens.accent))
                             : Icon(Icons.refresh_rounded, size: 20.0, color: tokens.textSecondary),
                       ),
                       const SizedBox(width: 4.0),
@@ -244,12 +246,7 @@ class _BookDetailPageState extends ConsumerState<BookDetailPage> {
                 child: _loading
                     ? Center(child: CircularProgressIndicator(color: tokens.accent))
                     : _errorMsg != null || book == null
-                        ? EmptyErrorView(
-                            icon: Icons.cloud_off_rounded,
-                            title: '详情加载失败',
-                            description: _errorMsg,
-                            actionLabel: '重试',
-                            onAction: _loadDetail)
+                        ? EmptyErrorView(icon: Icons.cloud_off_rounded, title: '详情加载失败', description: _errorMsg, actionLabel: '重试', onAction: _loadDetail)
                         : _buildBody(context, tokens, book),
               ),
             ],

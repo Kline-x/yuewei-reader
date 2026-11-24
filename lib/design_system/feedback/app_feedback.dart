@@ -28,7 +28,7 @@ class AppFeedback {
 
     final entry = OverlayEntry(
       builder: (_) => Positioned(
-        top: topPad + 12.0,
+        top: topPad + 64.0,
         left: 24.0,
         right: 24.0,
         child: IgnorePointer(
@@ -114,6 +114,8 @@ class AppFeedback {
     final controller = messenger.showSnackBar(
       SnackBar(
         duration: duration,
+        persist: false,
+        dismissDirection: DismissDirection.horizontal,
         behavior: SnackBarBehavior.floating,
         margin: EdgeInsets.fromLTRB(
           18.0,
@@ -146,5 +148,10 @@ class AppFeedback {
         onCommitted();
       }
     });
+  }
+
+  /// 离开书架或切换标签页时即时收起撤销条，防止跨页遮挡并立即触发待提交清理
+  static void dismissSnackBar(BuildContext context) {
+    ScaffoldMessenger.maybeOf(context)?.hideCurrentSnackBar();
   }
 }

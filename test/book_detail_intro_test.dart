@@ -26,6 +26,7 @@ Book _makeBook(String intro) {
     hasEverRead: false,
     isPinned: false,
     isInShelf: false,
+    hasUnreadUpdate: false,
     updatedAt: DateTime(2026, 1, 1),
   );
 }

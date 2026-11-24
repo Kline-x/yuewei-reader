@@ -1,6 +1,7 @@
 import 'package:drift/drift.dart';
 import 'package:lpinyin/lpinyin.dart';
 import '../../../core/database/app_database.dart';
+import '../../../core/database/bookmark_dao.dart';
 import '../../../core/storage/chapter_file_store.dart';
 import '../../download/download_manager.dart';
 import '../../sources/domain/book_match_models.dart';
@@ -172,14 +173,8 @@ class ShelfRepository {
 
     if (chapters.isNotEmpty) {
       final rows = chapters
-          .map(
-            (c) => ChaptersCompanion.insert(
-              bookId: bookId,
-              chapterIndex: c.index,
-              title: c.title,
-              url: c.url,
-            ),
-          )
+          .map((c) => ChaptersCompanion.insert(
+                bookId: bookId, chapterIndex: c.index, title: c.title, url: c.url))
           .toList();
       await db.replaceBookChapters(bookId, rows);
     }
@@ -205,39 +200,43 @@ class ShelfRepository {
     );
   }
 
-  /// 彻底物理清理单本书（严格按主键 bookId 删除，绝不误伤同名他书）
+  /// 彻底物理清理单本书（严格按主键 bookId 删除，同步清理书签与本地封面）
   Future<void> purgeBookData(String bookId) async {
     downloadManager.cancelDownload(bookId);
     await fileStore.clearBookCache(bookId);
+    await fileStore.deleteBookCover(bookId);
     await db.transaction(() async {
       await (db.delete(db.chapters)..where((t) => t.bookId.equals(bookId))).go();
-      await (db.delete(db.downloadTasks)..where((t) => t.bookId.equals(bookId)))
-          .go();
+      await (db.delete(db.downloadTasks)..where((t) => t.bookId.equals(bookId))).go();
+      await db.deleteBookmarksByBook(bookId);
       await (db.delete(db.books)..where((t) => t.id.equals(bookId))).go();
     });
   }
 
-  /// 清空单本书离线章节文件（保留书架记录与进度）
+  /// 清空单本书离线章节文件（本地导入书籍正文绝对保留，不予清理）
   Future<void> clearBookChapterFiles(String bookId) async {
+    final book = await db.getBookById(bookId);
+    if (book?.sourceId == kLocalBookSourceId) return;
     downloadManager.cancelDownload(bookId);
     await fileStore.clearBookCache(bookId);
     await (db.update(db.chapters)..where((t) => t.bookId.equals(bookId))).write(
-      const ChaptersCompanion(
-        isCached: Value(false),
-        cachedBytes: Value(0),
-      ),
+      const ChaptersCompanion(isCached: Value(false), cachedBytes: Value(0)),
     );
   }
 
-  /// 清空全库全部书籍的离线缓存文件与数据库索引（停止一切在途下载，确保统计实时归零）
+  /// 清空非本地导入书籍的离线缓存文件与数据库索引（本地书正文与 cached 状态严格保留）
   Future<void> clearAllCaches() async {
     downloadManager.cancelAll();
-    await fileStore.clearAllCaches();
-    await db.update(db.chapters).write(
-      const ChaptersCompanion(
-        isCached: Value(false),
-        cachedBytes: Value(0),
-      ),
+    final localRows = await (db.select(db.books)
+          ..where((t) => t.sourceId.equals(kLocalBookSourceId)))
+        .get();
+    final localIds = localRows.map((b) => b.id).toSet();
+    await fileStore.clearNonLocalCaches(localIds);
+    final stmt = localIds.isEmpty
+        ? db.update(db.chapters)
+        : (db.update(db.chapters)..where((t) => t.bookId.isNotIn(localIds)));
+    await stmt.write(
+      const ChaptersCompanion(isCached: Value(false), cachedBytes: Value(0)),
     );
   }
 
@@ -286,14 +285,8 @@ class ShelfRepository {
     await db.replaceBookChapters(
       bookId,
       newChapters
-          .map(
-            (c) => ChaptersCompanion.insert(
-              bookId: bookId,
-              chapterIndex: c.index,
-              title: c.title,
-              url: c.url,
-            ),
-          )
+          .map((c) => ChaptersCompanion.insert(
+                bookId: bookId, chapterIndex: c.index, title: c.title, url: c.url))
           .toList(),
     );
 

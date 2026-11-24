@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../../core/database/app_database.dart';
+import '../../../core/storage/chapter_file_store.dart';
 import '../../../design_system/components/book_cover.dart';
 import '../../../design_system/components/soft_button.dart';
 import '../../../design_system/components/soft_card.dart';
@@ -46,14 +47,13 @@ class BookDetailHeaderSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final tokens = SoftTokens.of(context);
+    final isLocal = book.sourceId == kLocalBookSourceId;
     final intro = SourceCrawlerService.cleanSeoIntro(book.intro);
     final safeCategory = SourceCrawlerService.sanitizeBadge(book.category);
     final parsedStatus = SourceCrawlerService.sanitizeBadge(book.statusText);
-    final safeStatus = parsedStatus.isEmpty ? '连载中' : parsedStatus;
-    final safeUpdateTime =
-        SourceCrawlerService.sanitizeUpdateTime(book.lastUpdateTime);
-    final divider =
-        VerticalDivider(width: 1.0, thickness: 0.8, color: tokens.borderSubtle);
+    final safeStatus = parsedStatus.isEmpty ? (isLocal ? '本地藏书' : '连载中') : parsedStatus;
+    final safeUpdateTime = SourceCrawlerService.sanitizeUpdateTime(book.lastUpdateTime);
+    final divider = VerticalDivider(width: 1.0, thickness: 0.8, color: tokens.borderSubtle);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -123,13 +123,18 @@ class BookDetailHeaderSection extends StatelessWidget {
           child: IntrinsicHeight(
             child: Row(
               children: [
-                BookDetailStatCell(value: safeStatus, label: '连载状态'),
+                BookDetailStatCell(
+                  value: isLocal
+                      ? (book.category.contains('EPUB') ? 'EPUB 全本' : 'TXT 全本')
+                      : safeStatus,
+                  label: isLocal ? '藏书格式' : '连载状态',
+                ),
                 divider,
                 BookDetailStatCell(value: '$chapterCount 章', label: '全书篇幅'),
                 divider,
                 BookDetailStatCell(
                   value: sourceName,
-                  label: '当前书源',
+                  label: isLocal ? '书籍来源' : '当前书源',
                   highlight: true,
                 ),
               ],
@@ -145,25 +150,20 @@ class BookDetailHeaderSection extends StatelessWidget {
               tone: SoftButtonTone.tonal,
               onPressed: onToggleShelf,
             ),
-            const SizedBox(width: SoftSpacing.sm),
-            IconButton(
-              tooltip: '离线缓存',
-              constraints:
-                  const BoxConstraints(minWidth: 46.0, minHeight: 46.0),
-              style: IconButton.styleFrom(
-                backgroundColor: tokens.surface,
-                shape: const CircleBorder(),
+            if (!isLocal) ...[
+              const SizedBox(width: SoftSpacing.sm),
+              IconButton(
+                tooltip: '离线缓存',
+                constraints: const BoxConstraints(minWidth: 46.0, minHeight: 46.0),
+                style: IconButton.styleFrom(backgroundColor: tokens.surface, shape: const CircleBorder()),
+                onPressed: onOpenDownload,
+                icon: Icon(Icons.download_for_offline_outlined, color: tokens.textPrimary),
               ),
-              onPressed: onOpenDownload,
-              icon: Icon(Icons.download_for_offline_outlined,
-                  color: tokens.textPrimary),
-            ),
+            ],
             const SizedBox(width: SoftSpacing.sm),
             Expanded(
               child: SoftButton(
-                label: book.hasEverRead
-                    ? '继续阅读 (第${book.currentChapterIndex + 1}章)'
-                    : '开始阅读',
+                label: book.hasEverRead ? '继续阅读 (第${book.currentChapterIndex + 1}章)' : '开始阅读',
                 icon: Icons.menu_book_rounded,
                 expand: true,
                 onPressed: onStartReading,
@@ -176,6 +176,7 @@ class BookDetailHeaderSection extends StatelessWidget {
           intro: intro,
           introExpanded: introExpanded,
           refreshingMeta: refreshingMeta,
+          isLocal: isLocal,
           onToggleIntro: onToggleIntro,
         ),
         if (chapterCount > 0 || safeUpdateTime.isNotEmpty || refreshingMeta) ...[
@@ -231,12 +232,14 @@ class _IntroCard extends StatelessWidget {
     required this.intro,
     required this.introExpanded,
     required this.refreshingMeta,
+    required this.isLocal,
     required this.onToggleIntro,
   });
 
   final String intro;
   final bool introExpanded;
   final bool refreshingMeta;
+  final bool isLocal;
   final VoidCallback onToggleIntro;
 
   bool _exceedsThreeLines(
@@ -261,11 +264,12 @@ class _IntroCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final tokens = SoftTokens.of(context);
+    final emptyHint = isLocal
+        ? '当前本地藏书暂未包含作品简介'
+        : '当前书源暂未收录作品简介，可点击右上角切换书源查看';
     final displayText = intro.isNotEmpty
         ? intro
-        : (refreshingMeta
-            ? '正在同步作品简介与最新更新…'
-            : '当前书源暂未收录作品简介，可点击右上角切换书源查看');
+        : (refreshingMeta ? '正在同步作品简介与最新更新…' : emptyHint);
     final textStyle = SoftTypography.body.copyWith(
       color: intro.isEmpty ? tokens.textTertiary : tokens.textSecondary,
     );
@@ -276,27 +280,17 @@ class _IntroCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              Text(
-                '作品简介',
-                style: SoftTypography.cardTitle
-                    .copyWith(color: tokens.textPrimary),
-              ),
+              Text('作品简介', style: SoftTypography.cardTitle.copyWith(color: tokens.textPrimary)),
               if (refreshingMeta) ...[
                 const SizedBox(width: 8.0),
-                SizedBox(
-                  width: 12.0,
-                  height: 12.0,
-                  child: CircularProgressIndicator(
-                      strokeWidth: 1.8, color: tokens.accent),
-                ),
+                SizedBox(width: 12.0, height: 12.0, child: CircularProgressIndicator(strokeWidth: 1.8, color: tokens.accent)),
               ],
             ],
           ),
           const SizedBox(height: SoftSpacing.sm),
           LayoutBuilder(
             builder: (ctx, constraints) {
-              final effectiveStyle =
-                  DefaultTextStyle.of(ctx).style.merge(textStyle);
+              final effectiveStyle = DefaultTextStyle.of(ctx).style.merge(textStyle);
               final canExpand = _exceedsThreeLines(
                 intro,
                 effectiveStyle,
@@ -310,9 +304,7 @@ class _IntroCard extends StatelessWidget {
                   Text(
                     displayText,
                     maxLines: intro.isEmpty || introExpanded ? null : 3,
-                    overflow: intro.isEmpty || introExpanded
-                        ? TextOverflow.visible
-                        : TextOverflow.ellipsis,
+                    overflow: intro.isEmpty || introExpanded ? TextOverflow.visible : TextOverflow.ellipsis,
                     style: textStyle,
                   ),
                   if (intro.isNotEmpty && canExpand)
@@ -321,17 +313,11 @@ class _IntroCard extends StatelessWidget {
                       child: TextButton.icon(
                         onPressed: onToggleIntro,
                         icon: Icon(
-                          introExpanded
-                              ? Icons.keyboard_arrow_up_rounded
-                              : Icons.keyboard_arrow_down_rounded,
+                          introExpanded ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded,
                           size: 18.0,
                           color: tokens.accent,
                         ),
-                        label: Text(
-                          introExpanded ? '收起' : '展开全文',
-                          style: SoftTypography.caption
-                              .copyWith(color: tokens.accent),
-                        ),
+                        label: Text(introExpanded ? '收起' : '展开全文', style: SoftTypography.caption.copyWith(color: tokens.accent)),
                       ),
                     ),
                 ],

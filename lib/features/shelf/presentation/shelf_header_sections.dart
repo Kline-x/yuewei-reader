@@ -13,12 +13,14 @@ class ShelfHeaderBar extends StatelessWidget {
     required this.onTapSearch,
     required this.onTapSources,
     required this.onToggleView,
+    this.onTapImport,
   });
 
   final bool isGridView;
   final VoidCallback onTapSearch;
   final VoidCallback onTapSources;
   final VoidCallback onToggleView;
+  final VoidCallback? onTapImport;
 
   @override
   Widget build(BuildContext context) {
@@ -51,19 +53,29 @@ class ShelfHeaderBar extends StatelessWidget {
           ),
           IconButton(
             tooltip: '搜索找书',
-            constraints: const BoxConstraints(minWidth: 44.0, minHeight: 44.0),
+            constraints: const BoxConstraints(minWidth: 40.0, minHeight: 40.0),
             onPressed: onTapSearch,
             icon: Icon(Icons.search_rounded, color: tokens.textPrimary),
           ),
+          if (onTapImport != null)
+            IconButton(
+              tooltip: '导入与传书',
+              constraints: const BoxConstraints(minWidth: 40.0, minHeight: 40.0),
+              onPressed: onTapImport,
+              icon: Icon(
+                Icons.drive_folder_upload_outlined,
+                color: tokens.textPrimary,
+              ),
+            ),
           IconButton(
             tooltip: '书源中心',
-            constraints: const BoxConstraints(minWidth: 44.0, minHeight: 44.0),
+            constraints: const BoxConstraints(minWidth: 40.0, minHeight: 40.0),
             onPressed: onTapSources,
             icon: Icon(Icons.dns_outlined, color: tokens.textPrimary),
           ),
           IconButton(
             tooltip: isGridView ? '切换列表视图' : '切换网格视图',
-            constraints: const BoxConstraints(minWidth: 44.0, minHeight: 44.0),
+            constraints: const BoxConstraints(minWidth: 40.0, minHeight: 40.0),
             onPressed: onToggleView,
             icon: Icon(
               isGridView

@@ -27,6 +27,20 @@ class HostCapabilities {
 
 enum VolumeKeyEvent { up, down }
 
+/// 原生文档选择器返回的本地书籍文件描述
+@immutable
+class PickedBookFile {
+  const PickedBookFile({
+    required this.path,
+    required this.name,
+    required this.size,
+  });
+
+  final String path;
+  final String name;
+  final int size;
+}
+
 /// Android / iOS 双端统一原生桥接服务
 class HostBridge {
   HostBridge._() {
@@ -99,5 +113,26 @@ class HostBridge {
     try {
       await _channel.invokeMethod<bool>('keepScreenOn', {'enabled': enabled});
     } catch (_) {}
+  }
+
+  /// 调起双端原生文档选择器选取本地书籍（TXT / EPUB），取消或无返回值则返回 null
+  Future<PickedBookFile?> pickLocalBookFile() async {
+    try {
+      final raw = await _channel.invokeMapMethod<String, dynamic>(
+        'pickLocalBookFile',
+      );
+      if (raw == null) return null;
+      final path = (raw['path'] as String?)?.trim() ?? '';
+      if (path.isEmpty) return null;
+      final name = (raw['name'] as String?)?.trim() ?? '';
+      final size = (raw['size'] as num?)?.toInt() ?? 0;
+      return PickedBookFile(
+        path: path,
+        name: name.isNotEmpty ? name : path.split('/').last,
+        size: size,
+      );
+    } on MissingPluginException {
+      return null;
+    }
   }
 }

@@ -28,7 +28,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     final ok = await SoftDialog.confirm(
       context,
       title: '清理全部离线缓存',
-      message: '将停止所有在途缓存任务并释放全部本地章节正文文件，书架藏书与阅读进度会完整保留。',
+      message: '将停止所有在途缓存任务并释放全部在线书籍的离线缓存文件，本地导入藏书与阅读进度会完整保留。',
       confirmLabel: '确认清理',
       isDangerous: true,
     );
@@ -164,7 +164,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                   SettingsNavTile(
                     icon: Icons.cleaning_services_outlined,
                     title: _clearing ? '正在清理离线缓存...' : '一键清理全部离线缓存',
-                    subtitle: '释放章节缓存文件，不影响书架藏书',
+                    subtitle: '释放全部在线书籍缓存文件，保留本地导入藏书',
                     isDanger: true,
                     onTap: _clearing ? null : _confirmClearAllCache,
                   ),

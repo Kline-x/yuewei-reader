@@ -37,6 +37,7 @@ void main() {
         'getHostCapabilities',
         'setVolumeKeyIntercept',
         'keepScreenOn',
+        'pickLocalBookFile',
       ]) {
         expect(ktText, contains(method), reason: 'Android 缺少宿主方法 $method');
         expect(swiftText, contains(method), reason: 'iOS 缺少宿主方法 $method');
@@ -53,6 +54,11 @@ void main() {
       expect(buildGradle, contains('applicationId = "com.kline.yuewei"'));
       expect(manifest, contains('android:label="阅微"'));
       expect(plist, contains('<string>阅微</string>'));
+      expect(
+        plist,
+        contains('NSLocalNetworkUsageDescription'),
+        reason: 'iOS Info.plist 缺少局域网 Wi-Fi 传书权限用途说明',
+      );
       expect(
         plist.contains('UISupportsDocumentBrowser'),
         isFalse,

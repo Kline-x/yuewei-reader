@@ -4,15 +4,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../app/providers.dart';
-import '../../../core/database/app_database.dart';
-import '../../../design_system/components/book_cover.dart';
 import '../../../design_system/components/empty_error_view.dart';
 import '../../../design_system/components/soft_button.dart';
-import '../../../design_system/components/soft_card.dart';
 import '../../../design_system/components/soft_text_field.dart';
 import '../../../design_system/tokens/soft_metrics.dart';
 import '../../../design_system/tokens/soft_tokens.dart';
 import '../../sources/domain/book_match_models.dart';
+import 'discover_sections.dart';
 
 /// 探索书海 & 多源聚合搜书页：
 /// 1. 同一书名+作者自动聚合归并，标明「N 个可用书源 · 最快 xxx ms」；
@@ -164,29 +162,16 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(
-              SoftSpacing.xl,
-              SoftSpacing.md,
-              SoftSpacing.lg,
-              SoftSpacing.sm,
-            ),
+            padding: const EdgeInsets.fromLTRB(SoftSpacing.xl, SoftSpacing.md, SoftSpacing.lg, SoftSpacing.sm),
             child: Row(
               children: [
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        'DISCOVER',
-                        style: SoftTypography.eyebrow
-                            .copyWith(color: tokens.textTertiary),
-                      ),
+                      Text('DISCOVER', style: SoftTypography.eyebrow.copyWith(color: tokens.textTertiary)),
                       const SizedBox(height: 2.0),
-                      Text(
-                        '探索书海',
-                        style: SoftTypography.displayTitle
-                            .copyWith(color: tokens.textPrimary),
-                      ),
+                      Text('探索书海', style: SoftTypography.displayTitle.copyWith(color: tokens.textPrimary)),
                     ],
                   ),
                 ),
@@ -205,10 +190,7 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
             ),
           ),
           Padding(
-            padding: const EdgeInsets.symmetric(
-              horizontal: SoftSpacing.xl,
-              vertical: SoftSpacing.sm,
-            ),
+            padding: const EdgeInsets.symmetric(horizontal: SoftSpacing.xl, vertical: SoftSpacing.sm),
             child: Row(
               children: [
                 Expanded(
@@ -221,11 +203,7 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
                   ),
                 ),
                 const SizedBox(width: SoftSpacing.sm),
-                SoftButton(
-                  label: '搜索',
-                  compact: true,
-                  onPressed: () => _startSearch(_searchCtrl.text),
-                ),
+                SoftButton(label: '搜索', compact: true, onPressed: () => _startSearch(_searchCtrl.text)),
               ],
             ),
           ),
@@ -240,7 +218,13 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
             ),
           Expanded(
             child: !_hasSearched
-                ? _buildIdleView(tokens)
+                ? DiscoverIdleSection(
+                    db: ref.watch(appDatabaseProvider),
+                    onSelectKeyword: (kw) {
+                      _searchCtrl.text = kw;
+                      _startSearch(kw);
+                    },
+                  )
                 : (results.isEmpty && !_searching)
                     ? EmptyErrorView(
                         icon: Icons.search_off_rounded,
@@ -250,187 +234,16 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
                         actionLabel: '重新搜索',
                         onAction: () => _startSearch(_lastQuery),
                       )
-                    : _buildResultsList(tokens, results),
+                    : DiscoverResultsList(
+                        results: results,
+                        onTapBook: (book) {
+                          _focusNode.unfocus();
+                          context.push('/book', extra: book);
+                        },
+                      ),
           ),
         ],
       ),
-    );
-  }
-
-  Widget _buildIdleView(SoftTokens tokens) {
-    final db = ref.watch(appDatabaseProvider);
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(
-        SoftSpacing.xl,
-        SoftSpacing.md,
-        SoftSpacing.xl,
-        SoftSpacing.dockClearance,
-      ),
-      children: [
-        StreamBuilder<List<SearchHistoryData>>(
-          stream: db.watchSearchHistory(),
-          builder: (context, snap) {
-            final history = snap.data ?? const [];
-            if (history.isEmpty) {
-              return SoftCard(
-                backgroundColor: tokens.surface,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '多源聚合找书',
-                      style: SoftTypography.cardTitle
-                          .copyWith(color: tokens.textPrimary),
-                    ),
-                    const SizedBox(height: 6.0),
-                    Text(
-                      '输入完整或部分书名，自动并发检索全网已启用书源并按同书聚合排序，支持随时无感换源与 Legado 书源导入。',
-                      style: SoftTypography.body
-                          .copyWith(color: tokens.textSecondary),
-                    ),
-                  ],
-                ),
-              );
-            }
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      '最近搜索',
-                      style: SoftTypography.sectionTitle
-                          .copyWith(color: tokens.textPrimary),
-                    ),
-                    TextButton(
-                      onPressed: db.clearSearchHistory,
-                      child: Text(
-                        '清空',
-                        style: SoftTypography.caption
-                            .copyWith(color: tokens.textSecondary),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: SoftSpacing.sm),
-                Wrap(
-                  spacing: 8.0,
-                  runSpacing: 8.0,
-                  children: history.map((h) {
-                    return ActionChip(
-                      label: Text(
-                        h.keyword,
-                        style: SoftTypography.caption
-                            .copyWith(color: tokens.textPrimary),
-                      ),
-                      backgroundColor: tokens.surface,
-                      side: BorderSide(color: tokens.borderSubtle, width: 0.8),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(SoftRadius.pill),
-                      ),
-                      onPressed: () {
-                        _searchCtrl.text = h.keyword;
-                        _startSearch(h.keyword);
-                      },
-                    );
-                  }).toList(),
-                ),
-              ],
-            );
-          },
-        ),
-      ],
-    );
-  }
-
-  Widget _buildResultsList(
-    SoftTokens tokens,
-    List<AggregatedBookMatch> results,
-  ) {
-    return ListView.separated(
-      padding: const EdgeInsets.fromLTRB(
-        SoftSpacing.xl,
-        SoftSpacing.md,
-        SoftSpacing.xl,
-        SoftSpacing.dockClearance,
-      ),
-      itemCount: results.length,
-      separatorBuilder: (_, _) => const SizedBox(height: SoftSpacing.md),
-      itemBuilder: (ctx, i) {
-        final book = results[i];
-        return SoftCard(
-          onTap: () {
-            _focusNode.unfocus();
-            context.push('/book', extra: book);
-          },
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              BookCover(
-                title: book.displayTitle,
-                coverUrl: book.bestCoverUrl,
-                width: 68.0,
-                height: 94.0,
-              ),
-              const SizedBox(width: SoftSpacing.lg),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      book.displayTitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: SoftTypography.cardTitle
-                          .copyWith(color: tokens.textPrimary),
-                    ),
-                    const SizedBox(height: 4.0),
-                    Text(
-                      book.displayAuthor,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: SoftTypography.caption
-                          .copyWith(color: tokens.textSecondary),
-                    ),
-                    if (book.bestIntro.isNotEmpty) ...[
-                      const SizedBox(height: 6.0),
-                      Text(
-                        book.bestIntro,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: SoftTypography.caption
-                            .copyWith(color: tokens.textTertiary),
-                      ),
-                    ],
-                    const SizedBox(height: 8.0),
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8.0,
-                            vertical: 3.0,
-                          ),
-                          decoration: BoxDecoration(
-                            color: tokens.accentSoft,
-                            borderRadius:
-                                BorderRadius.circular(SoftRadius.pill),
-                          ),
-                          child: Text(
-                            '${book.sourceCount} 个可用书源 · 最快 ${book.fastestLatencyMs}ms',
-                            style: SoftTypography.micro
-                                .copyWith(color: tokens.accent),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        );
-      },
     );
   }
 }

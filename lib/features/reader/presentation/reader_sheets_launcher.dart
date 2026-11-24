@@ -2,15 +2,18 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../app/providers.dart';
 import '../../../core/database/app_database.dart';
+import '../../../core/storage/chapter_file_store.dart';
 import '../../../design_system/feedback/app_feedback.dart';
 import '../engine/reader_chapter_loader.dart';
 import '../engine/reader_slide_window.dart';
+import 'reader_bookmark_sheet.dart';
 import 'reader_catalog_sheet.dart';
 import 'reader_download_sheet.dart';
+import 'reader_in_book_search_sheet.dart';
 import 'reader_source_sheet.dart';
 import 'reader_typography_sheet.dart';
 
-/// 阅读器二级功能弹窗调度器（换源 / 缓存 / 目录 / 排版 / 加书架，降低主页面复杂度）
+/// 阅读器二级功能弹窗调度器（换源 / 缓存 / 目录 / 书签 / 搜索 / 排版 / 加书架）
 class ReaderSheetsLauncher {
   const ReaderSheetsLauncher._();
 
@@ -114,6 +117,46 @@ class ReaderSheetsLauncher {
         chapters: chapters,
         currentChapterIndex: currentChapterIndex,
         onSelectChapter: (idx) => onSelectChapter(idx),
+      ),
+    );
+  }
+
+  static Future<void> openBookmarkSheet({
+    required BuildContext context,
+    required AppDatabase db,
+    required String bookId,
+    required int currentChapterIndex,
+    required Future<void> Function(int chapterIndex, int charOffset) onSelectBookmark,
+    required Future<void> Function(Future<void> Function() task) runWithGuard,
+  }) {
+    return runWithGuard(
+      () => ReaderBookmarkSheet.show(
+        context,
+        db: db,
+        bookId: bookId,
+        currentChapterIndex: currentChapterIndex,
+        onSelectBookmark: onSelectBookmark,
+      ),
+    );
+  }
+
+  static Future<void> openInBookSearchSheet({
+    required BuildContext context,
+    required String bookId,
+    required List<Chapter> chapters,
+    required ChapterFileStore fileStore,
+    required bool isLocalBook,
+    required Future<void> Function(int chapterIndex, int charOffset) onSelectHit,
+    required Future<void> Function(Future<void> Function() task) runWithGuard,
+  }) {
+    return runWithGuard(
+      () => ReaderInBookSearchSheet.show(
+        context,
+        bookId: bookId,
+        chapters: chapters,
+        fileStore: fileStore,
+        isLocalBook: isLocalBook,
+        onSelectHit: onSelectHit,
       ),
     );
   }

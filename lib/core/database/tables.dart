@@ -22,6 +22,8 @@ class Books extends Table {
   BoolColumn get hasEverRead => boolean().withDefault(const Constant(false))();
   BoolColumn get isPinned => boolean().withDefault(const Constant(false))();
   BoolColumn get isInShelf => boolean().withDefault(const Constant(false))();
+  BoolColumn get hasUnreadUpdate =>
+      boolean().withDefault(const Constant(false))();
   DateTimeColumn get lastReadAt => dateTime().nullable()();
   DateTimeColumn get addedAt => dateTime().nullable()();
   DateTimeColumn get updatedAt => dateTime()();
@@ -99,4 +101,15 @@ class AppPreferences extends Table {
 
   @override
   Set<Column> get primaryKey => {key};
+}
+
+/// 书签记录表
+class Bookmarks extends Table {
+  IntColumn get id => integer().autoIncrement()();
+  TextColumn get bookId => text()();
+  IntColumn get chapterIndex => integer()();
+  TextColumn get chapterTitle => text()();
+  IntColumn get charOffset => integer().withDefault(const Constant(0))();
+  TextColumn get excerpt => text().withDefault(const Constant(''))();
+  DateTimeColumn get createdAt => dateTime()();
 }

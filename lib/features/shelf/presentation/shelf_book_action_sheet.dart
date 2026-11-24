@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/database/app_database.dart';
+import '../../../core/storage/chapter_file_store.dart';
 import '../../../design_system/components/soft_bottom_sheet.dart';
+import '../../../design_system/feedback/app_feedback.dart';
 import '../../../design_system/tokens/soft_metrics.dart';
 import '../../../design_system/tokens/soft_tokens.dart';
 import '../../reader/presentation/reader_download_sheet.dart';
@@ -24,6 +26,7 @@ Future<void> showShelfBookActionSheet(
     maxHeightFactor: 0.65,
     builder: (sheetCtx) {
       final tokens = SoftTokens.of(sheetCtx);
+      final isLocal = book.sourceId == kLocalBookSourceId;
       return ListView(
         shrinkWrap: true,
         padding: const EdgeInsets.fromLTRB(
@@ -37,24 +40,26 @@ Future<void> showShelfBookActionSheet(
             icon: Icons.info_outline_rounded,
             label: '书籍详情与目录',
             onTap: () {
+              AppFeedback.dismissSnackBar(context);
               Navigator.of(sheetCtx).pop();
               context.push('/book?id=${book.id}');
             },
           ),
-          _ActionRow(
-            icon: Icons.download_for_offline_outlined,
-            label: '离线缓存章节',
-            onTap: () {
-              Navigator.of(sheetCtx).pop();
-              ReaderDownloadSheet.show(
-                context,
-                bookId: book.id,
-                bookTitle: book.title,
-                totalChapters: book.totalChapters,
-                currentChapterIndex: book.currentChapterIndex,
-              );
-            },
-          ),
+          if (!isLocal)
+            _ActionRow(
+              icon: Icons.download_for_offline_outlined,
+              label: '离线缓存章节',
+              onTap: () {
+                Navigator.of(sheetCtx).pop();
+                ReaderDownloadSheet.show(
+                  context,
+                  bookId: book.id,
+                  bookTitle: book.title,
+                  totalChapters: book.totalChapters,
+                  currentChapterIndex: book.currentChapterIndex,
+                );
+              },
+            ),
           _ActionRow(
             icon: book.isPinned
                 ? Icons.push_pin_rounded
@@ -65,14 +70,15 @@ Future<void> showShelfBookActionSheet(
               await onTogglePin();
             },
           ),
-          _ActionRow(
-            icon: Icons.cleaning_services_outlined,
-            label: '清空本书缓存文件',
-            onTap: () async {
-              Navigator.of(sheetCtx).pop();
-              await onClearBookCache();
-            },
-          ),
+          if (!isLocal)
+            _ActionRow(
+              icon: Icons.cleaning_services_outlined,
+              label: '清空本书缓存文件',
+              onTap: () async {
+                Navigator.of(sheetCtx).pop();
+                await onClearBookCache();
+              },
+            ),
           _ActionRow(
             icon: Icons.delete_outline_rounded,
             label: '移出书架',

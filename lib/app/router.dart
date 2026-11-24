@@ -7,6 +7,7 @@ import '../design_system/components/sublime_floating_dock.dart';
 import '../design_system/feedback/app_feedback.dart';
 import '../features/book_detail/presentation/book_detail_page.dart';
 import '../features/discover/presentation/discover_page.dart';
+import '../features/local_import/presentation/import_and_transfer_page.dart';
 import '../features/reader/presentation/reader_page.dart';
 import '../features/settings/presentation/settings_page.dart';
 import '../features/shelf/presentation/shelf_page.dart';
@@ -56,6 +57,11 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         path: '/sources',
         parentNavigatorKey: _rootNavigatorKey,
         builder: (_, _) => const SourcesPage(),
+      ),
+      GoRoute(
+        path: '/import',
+        parentNavigatorKey: _rootNavigatorKey,
+        builder: (_, _) => const ImportAndTransferPage(),
       ),
       GoRoute(
         path: '/book',
@@ -118,6 +124,7 @@ class _RootShellState extends ConsumerState<RootShell> {
   void _onTabTap(int index) {
     FocusManager.instance.primaryFocus?.unfocus();
     ref.read(swipeCoordinatorProvider).closeAll();
+    AppFeedback.dismissSnackBar(context);
     widget.navigationShell.goBranch(
       index,
       initialLocation: index == widget.navigationShell.currentIndex,

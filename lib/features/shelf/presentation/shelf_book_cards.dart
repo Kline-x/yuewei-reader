@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../../core/database/app_database.dart';
+import '../../../core/storage/chapter_file_store.dart';
 import '../../../design_system/components/book_cover.dart';
 import '../../../design_system/components/single_swipe_tile.dart';
 import '../../../design_system/components/soft_card.dart';
@@ -27,8 +28,12 @@ class ShelfListBookCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final tokens = SoftTokens.of(context);
+    final isLocal = book.sourceId == kLocalBookSourceId;
+    final hasUpdate = book.hasUnreadUpdate && !isLocal;
     final progress = ShelfRepository.computeProgress(book);
     final progressLabel = ShelfRepository.formatProgressLabel(book);
+    final baseAuthor = book.author.isEmpty ? (isLocal ? '本地文档' : '佚名') : book.author;
+    final authorLine = isLocal ? '$baseAuthor · 本地藏书' : baseAuthor;
     final chapterHint = book.hasEverRead && book.currentChapterTitle.isNotEmpty
         ? book.currentChapterTitle
         : (book.totalChapters > 0 ? '共 ${book.totalChapters} 章 · 尚未开卷' : '点击开始阅读');
@@ -68,22 +73,19 @@ class ShelfListBookCard extends StatelessWidget {
                     Row(
                       children: [
                         if (book.isPinned) ...[
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 6.0,
-                              vertical: 2.0,
-                            ),
-                            decoration: BoxDecoration(
-                              color: tokens.accentSoft,
-                              borderRadius: BorderRadius.circular(6.0),
-                            ),
-                            child: Text(
-                              '置顶',
-                              style: SoftTypography.micro.copyWith(
-                                color: tokens.accent,
-                                fontSize: 10.0,
-                              ),
-                            ),
+                          _ShelfTagChip(
+                            label: '置顶',
+                            bg: tokens.accentSoft,
+                            fg: tokens.accent,
+                          ),
+                          const SizedBox(width: 6.0),
+                        ],
+                        if (hasUpdate) ...[
+                          _ShelfTagChip(
+                            label: '更新',
+                            bg: tokens.accentSoft,
+                            fg: tokens.accent,
+                            showDot: true,
                           ),
                           const SizedBox(width: 6.0),
                         ],
@@ -100,7 +102,7 @@ class ShelfListBookCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 4.0),
                     Text(
-                      book.author.isEmpty ? '佚名' : book.author,
+                      authorLine,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: SoftTypography.caption
@@ -177,6 +179,8 @@ class ShelfGridBookCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final tokens = SoftTokens.of(context);
+    final isLocal = book.sourceId == kLocalBookSourceId;
+    final hasUpdate = book.hasUnreadUpdate && !isLocal;
     final label = ShelfRepository.formatProgressLabel(book);
 
     return GestureDetector(
@@ -203,22 +207,22 @@ class ShelfGridBookCard extends StatelessWidget {
                       Positioned(
                         left: 6.0,
                         top: 6.0,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6.0,
-                            vertical: 2.0,
-                          ),
-                          decoration: BoxDecoration(
-                            color: tokens.accent,
-                            borderRadius: BorderRadius.circular(6.0),
-                          ),
-                          child: Text(
-                            '置顶',
-                            style: SoftTypography.micro.copyWith(
-                              color: tokens.onAccent,
-                              fontSize: 9.5,
-                            ),
-                          ),
+                        child: _ShelfTagChip(
+                          label: '置顶',
+                          bg: tokens.accent,
+                          fg: tokens.onAccent,
+                          fontSize: 9.5,
+                        ),
+                      ),
+                    if (hasUpdate || isLocal)
+                      Positioned(
+                        left: 6.0,
+                        bottom: 6.0,
+                        child: _ShelfTagChip(
+                          label: hasUpdate ? '更新' : '本地',
+                          bg: hasUpdate ? tokens.accent : const Color(0x99000000),
+                          fg: hasUpdate ? tokens.onAccent : Colors.white,
+                          fontSize: 9.5,
                         ),
                       ),
                     Positioned(
@@ -264,6 +268,53 @@ class ShelfGridBookCard extends StatelessWidget {
             overflow: TextOverflow.ellipsis,
             style: SoftTypography.micro.copyWith(
               color: book.hasEverRead ? tokens.accent : tokens.textTertiary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ShelfTagChip extends StatelessWidget {
+  const _ShelfTagChip({
+    required this.label,
+    required this.bg,
+    required this.fg,
+    this.fontSize = 10.0,
+    this.showDot = false,
+  });
+
+  final String label;
+  final Color bg;
+  final Color fg;
+  final double fontSize;
+  final bool showDot;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6.0, vertical: 2.0),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(6.0),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (showDot) ...[
+            Container(
+              width: 5.0,
+              height: 5.0,
+              decoration: BoxDecoration(color: fg, shape: BoxShape.circle),
+            ),
+            const SizedBox(width: 4.0),
+          ],
+          Text(
+            label,
+            style: SoftTypography.micro.copyWith(
+              color: fg,
+              fontSize: fontSize,
             ),
           ),
         ],

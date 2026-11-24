@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../app/providers.dart';
 import '../../../core/database/app_database.dart';
+import '../../../core/storage/chapter_file_store.dart';
 import '../../sources/domain/book_match_models.dart';
 import '../../sources/domain/book_source_rule.dart';
 import '../../sources/engine/source_crawler_service.dart';
@@ -10,6 +11,7 @@ class BookDetailLoader {
   const BookDetailLoader._();
 
   static bool needsMetaRepair(Book b) {
+    if (b.sourceId == kLocalBookSourceId) return false;
     return SourceCrawlerService.sanitizeBadge(b.category) != b.category ||
         SourceCrawlerService.cleanSeoIntro(b.intro) != b.intro ||
         b.statusText.length > 16 ||
@@ -41,25 +43,34 @@ class BookDetailLoader {
       return (book: null, chapters: const <Chapter>[], sourceName: '');
     }
 
-    final chapters = await db.getChaptersByBook(existing.id);
-    final rule = await sourceRepo.getRuleById(existing.sourceId);
     var currentBook = existing;
+    if (currentBook.hasUnreadUpdate) {
+      await db.setBookUnreadUpdate(currentBook.id, false);
+      currentBook = currentBook.copyWith(hasUnreadUpdate: false);
+    }
+
+    final chapters = await db.getChaptersByBook(currentBook.id);
+    if (currentBook.sourceId == kLocalBookSourceId) {
+      return (book: currentBook, chapters: chapters, sourceName: '本地导入');
+    }
+
+    final rule = await sourceRepo.getRuleById(currentBook.sourceId);
     final aggCover = aggregatedMatch?.bestCoverUrl ?? '';
 
-    if (chapters.isNotEmpty && existing.coverUrl.isEmpty && aggCover.isNotEmpty) {
+    if (chapters.isNotEmpty && currentBook.coverUrl.isEmpty && aggCover.isNotEmpty) {
       currentBook = await shelfRepo.ensureBookWithChapters(
-        bookId: existing.id,
-        title: existing.title,
-        author: existing.author,
+        bookId: currentBook.id,
+        title: currentBook.title,
+        author: currentBook.author,
         coverUrl: aggCover,
-        intro: existing.intro,
-        category: existing.category,
-        statusText: existing.statusText,
-        latestChapterTitle: existing.latestChapterTitle,
-        lastUpdateTime: existing.lastUpdateTime,
-        sourceId: existing.sourceId,
-        bookUrl: existing.bookUrl,
-        tocUrl: existing.tocUrl,
+        intro: currentBook.intro,
+        category: currentBook.category,
+        statusText: currentBook.statusText,
+        latestChapterTitle: currentBook.latestChapterTitle,
+        lastUpdateTime: currentBook.lastUpdateTime,
+        sourceId: currentBook.sourceId,
+        bookUrl: currentBook.bookUrl,
+        tocUrl: currentBook.tocUrl,
         chapters: const [],
       );
     }

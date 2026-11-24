@@ -1,5 +1,7 @@
 import 'dart:io';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:yuewei_reader/design_system/feedback/app_feedback.dart';
 import 'package:yuewei_reader/design_system/tokens/soft_tokens.dart';
 import 'package:yuewei_reader/features/reader/engine/page_models.dart';
 
@@ -73,6 +75,86 @@ void main() {
           reason: '${entity.path} 不应出现已废弃的旧应用名',
         );
       }
+    });
+  });
+
+  group('AppFeedback 撤销条自动关闭与手动收起生命周期测试', () {
+    Future<BuildContext> pumpHost(WidgetTester tester) async {
+      late BuildContext hostContext;
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: SoftTokens.resolve(SoftPalette.mistyJade, isDark: false)
+              .toThemeData(),
+          home: Scaffold(
+            body: Builder(
+              builder: (context) {
+                hostContext = context;
+                return const SizedBox.shrink();
+              },
+            ),
+          ),
+        ),
+      );
+      return hostContext;
+    }
+
+    testWidgets('带撤销按钮的 SnackBar 到时自动收起并触发 onCommitted', (tester) async {
+      final ctx = await pumpHost(tester);
+      var undone = false;
+      var committed = false;
+
+      AppFeedback.showUndoSnackBar(
+        ctx,
+        message: '已移出书架',
+        onUndo: () => undone = true,
+        onCommitted: () => committed = true,
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('已移出书架'), findsOneWidget);
+
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpAndSettle();
+
+      expect(find.text('已移出书架'), findsNothing);
+      expect(undone, isFalse);
+      expect(committed, isTrue);
+    });
+
+    testWidgets('点击撤销触发 onUndo 且不触发 onCommitted；dismissSnackBar 立即收起并提交', (
+      tester,
+    ) async {
+      final ctx = await pumpHost(tester);
+      var undone1 = false;
+      var committed1 = false;
+      AppFeedback.showUndoSnackBar(
+        ctx,
+        message: '已移出第一本',
+        onUndo: () => undone1 = true,
+        onCommitted: () => committed1 = true,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('撤销'));
+      await tester.pumpAndSettle();
+      expect(undone1, isTrue);
+      expect(committed1, isFalse);
+
+      var undone2 = false;
+      var committed2 = false;
+      AppFeedback.showUndoSnackBar(
+        ctx,
+        message: '已移出第二本',
+        onUndo: () => undone2 = true,
+        onCommitted: () => committed2 = true,
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('已移出第二本'), findsOneWidget);
+
+      AppFeedback.dismissSnackBar(ctx);
+      await tester.pumpAndSettle();
+      expect(find.text('已移出第二本'), findsNothing);
+      expect(undone2, isFalse);
+      expect(committed2, isTrue);
     });
   });
 }
