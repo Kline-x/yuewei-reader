@@ -1,0 +1,150 @@
+name: Yuewei CI/CD
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  lint_and_test:
+    name: 代码门禁、静态分析与单元测试
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库代码
+        uses: actions/checkout@v4
+
+      - name: 配置 Flutter 3.47.4 (stable)
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.4'
+          channel: 'stable'
+          cache: true
+
+      - name: 获取依赖
+        run: flutter pub get
+
+      - name: 静态分析 (flutter analyze)
+        run: flutter analyze
+
+      - name: 校验非 *.g.dart 文件 <= 350 行红线
+        shell: bash
+        run: |
+          set -euo pipefail
+          violations=0
+          max_lines=0
+          file_count=0
+          while IFS= read -r -d '' file; do
+            lines=$(wc -l < "$file")
+            file_count=$((file_count + 1))
+            if [ "$lines" -gt "$max_lines" ]; then
+              max_lines=$lines
+            fi
+            if [ "$lines" -gt 350 ]; then
+              echo "::error file=${file}::文件行数 ${lines} 超过 350 行红线"
+              violations=$((violations + 1))
+            fi
+          done < <(find lib test -type f -name '*.dart' ! -name '*.g.dart' -print0)
+          echo "已扫描 ${file_count} 个非生成 Dart 文件，最大行数: ${max_lines}"
+          if [ "$violations" -gt 0 ]; then
+            echo "发现 ${violations} 个超限文件，阻断构建！"
+            exit 1
+          fi
+
+      - name: 运行单元测试
+        run: flutter test
+
+  build_android:
+    name: 构建 Android arm64 Release APK
+    runs-on: ubuntu-latest
+    needs: lint_and_test
+    steps:
+      - name: 检出仓库代码
+        uses: actions/checkout@v4
+
+      - name: 配置 Java 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: 配置 Flutter 3.47.4 (stable)
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.4'
+          channel: 'stable'
+          cache: true
+
+      - name: 获取依赖
+        run: flutter pub get
+
+      - name: 构建 arm64 Release APK
+        run: flutter build apk --release --target-platform android-arm64
+
+      - name: 生成 APK SHA-256 校验文件
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd build/app/outputs/flutter-apk
+          sha256sum app-release.apk > app-release.apk.sha256
+          cat app-release.apk.sha256
+
+      - name: 上传 Android 构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: yuewei-android-arm64-release
+          path: |
+            build/app/outputs/flutter-apk/app-release.apk
+            build/app/outputs/flutter-apk/app-release.apk.sha256
+
+  verify_ios:
+    name: iOS 语法检查与无签名构建验证
+    runs-on: macos-latest
+    needs: lint_and_test
+    steps:
+      - name: 检出仓库代码
+        uses: actions/checkout@v4
+
+      - name: 配置 Flutter 3.47.4 (stable)
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.4'
+          channel: 'stable'
+          cache: true
+
+      - name: 获取依赖
+        run: flutter pub get
+
+      - name: 校验 AppDelegate.swift 语法
+        run: swiftc -parse ios/Runner/AppDelegate.swift
+
+      - name: 构建 iOS 无签名产物
+        run: flutter build ios --no-codesign
+
+  release:
+    name: 发布 Tag Release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - build_android
+      - verify_ios
+    permissions:
+      contents: write
+    steps:
+      - name: 下载 Android Release 构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: yuewei-android-arm64-release
+          path: release-assets
+
+      - name: 创建 GitHub Release 并附带产物
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            release-assets/app-release.apk
+            release-assets/app-release.apk.sha256
