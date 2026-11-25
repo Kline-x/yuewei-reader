@@ -11,7 +11,7 @@
 | **M1** | `b8465dd` | 已完成 | 基础工程、八套主题、书源详情自愈、五模式翻页 | 工程冷启、5 源全链路、5 模式翻页打通 |
 | **M2** | `dc8469f` | 已完成 | 本地 TXT/EPUB、18680 Wi-Fi 传书、书签与全文搜书 | `48/48` 测试全绿 · 三轮真机 E2E 闭环 |
 | **M3** | `f1e753e` | 已完成 | 双端 TTS 听书、WebDAV 云同步、12 组书源扩充 | `64/64` 测试 · `0` analyze issues · 最大 `348` 行 · K60 三轮零缺陷 |
-| **M4** | `待本轮提交` | 治理收口 | 仓库门面、治理文档体系、GitHub Actions CI/CD 与 iOS 对等核验 | YAML/链接/行数门禁通过 · iOS 对等 0 P0/P1 · `swiftc` 零错误（待云端 CI `macos-latest` 无签名构建） |
+| **M4** | `6f8c79e` | 已完成 | 仓库门面、治理文档体系、GitHub Actions CI/CD 与 iOS 对等核验 | CI Run `#45515717930` 全绿（门禁单测 + Android APK + `macos-latest` iOS 无签名构建）· `v1.0.0` 发版就绪 |
 
 ---
 
@@ -48,14 +48,13 @@
   - Android Release 产物：`app-release.apk`（`arm64-v8a`）体积 **29,006,919 字节**，SHA-256：`c574c383a438e667af3408161091156c3f0b06da261fbe6f9f400cb1edadf2ee`。
   - 真机 E2E 回归（Redmi K60）：完成三轮真机全链路零缺陷闭环，强杀冷启动耗时 **466ms**，`logcat` 全程零异常。
 
-### M4 — 治理文档、CI/CD 与 iOS 对等核验 (`M4 治理收口 · 待本轮提交`)
+### M4 — 治理文档、CI/CD 与 iOS 对等核验 (`6f8c79e` / `v1.0.0`)
 - **已完成交付**：
   - [x] 重写生产级项目门面 [README.md](README.md)。
   - [x] 建立自包含工程治理三件套：[AGENTS.md](AGENTS.md)、[HANDOFF.md](HANDOFF.md)、[PROGRESS.md](PROGRESS.md)。
-  - [x] 构建 GitHub Actions 全自动流水线 [ci.yml](.github/workflows/ci.yml)（代码行数门禁 + 静态分析 + 单元测试 + Android Release APK & SHA-256 + iOS 无签名构建验证 + Tag 自动 Release），已通过 `yaml.safe_load` 语法校验。
-  - [x] iOS 端跨平台对等核查与静态构建验证（**0 个 P0/P1 阻塞缺陷**）：
-    - `swiftc -parse ios/Runner/AppDelegate.swift` 与 `SceneDelegate.swift` 通过；`iPhoneOS18.5.sdk` / `iPhoneSimulator18.5.sdk`（`arm64-apple-ios15.0`）`swiftc -typecheck` 零错误零警告。
+  - [x] 构建 GitHub Actions 全自动流水线 [ci.yml](.github/workflows/ci.yml)（代码行数门禁 + 静态分析 + 单元测试 + Android Release APK & SHA-256 + iOS 无签名构建验证 + Tag 自动 Release），Run [`#45515717930`](https://github.com/Kline-x/yuewei-reader/actions/runs/45515717930) 全链路绿灯通过（`lint_and_test` 1m49s、`build_android` 5m33s、`verify_ios` 6m1s）。
+  - [x] iOS 端跨平台对等核查与静态/云端构建验证（**0 个 P0/P1 阻塞缺陷**）：
+    - `swiftc -parse ios/Runner/AppDelegate.swift` 与 `SceneDelegate.swift` 通过；`iPhoneOS18.5.sdk` / `iPhoneSimulator18.5.sdk`（`arm64-apple-ios15.0`）`swiftc -typecheck` 零错误零警告；云端 `macos-latest` 已跑通 `flutter build ios --no-codesign`。
     - `ios/Runner/Info.plist` 已配置 `NSAllowsArbitraryLoads = true` 与 `NSLocalNetworkUsageDescription`，12 组内置书源（含 10 组 `http://`）与 `com.kline.yuewei/host_bridge` 双端通道（9 个宿主方法与 `AVSpeechSynthesizer` / `UIDocumentPicker`）完全对等。
     - 后续 P2 温和优化备忘（不阻塞编译与主流程）：高倍速 TTS 语速曲线平缓化、`pickLocalBookFile` 临时副本清理、以及面向 Swift 6 严格并发的注解前瞻。
-- **待云端 CI 收口**：
-  - [ ] 本机无可用 iOS Simulator Runtime，已将 `flutter build ios --no-codesign` 交由 GitHub Actions `macos-latest` (`verify_ios`) 在云端闭环验证。
+  - [x] 正式发版：推送 `v1.0.0` Tag 触发 GitHub Release 自动附带 `app-release.apk` 与 `.sha256` 校验产物。
