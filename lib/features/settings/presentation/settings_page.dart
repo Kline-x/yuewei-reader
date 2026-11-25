@@ -145,7 +145,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
               ),
             ),
             const SizedBox(height: SoftSpacing.xl),
-            const SettingsSectionHeader(title: '书源与离线存储'),
+            const SettingsSectionHeader(title: '书源、备份与云同步'),
             const SizedBox(height: SoftSpacing.sm),
             SoftCard(
               padding: const EdgeInsets.symmetric(
@@ -157,8 +157,15 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                   SettingsNavTile(
                     icon: Icons.dns_outlined,
                     title: '书源生态管理与探活',
-                    subtitle: '查看站点延迟、导入 Legado 书源 JSON',
+                    subtitle: '分组筛选、远程订阅、导入导出 Legado 书源',
                     onTap: () => context.push('/sources'),
+                  ),
+                  Divider(height: 1.0, color: tokens.borderSubtle),
+                  SettingsNavTile(
+                    icon: Icons.cloud_sync_outlined,
+                    title: '云端同步与备份恢复',
+                    subtitle: 'WebDAV 跨设备无损合并、本地全量 JSON 备份',
+                    onTap: () => context.push('/sync'),
                   ),
                   Divider(height: 1.0, color: tokens.borderSubtle),
                   SettingsNavTile(

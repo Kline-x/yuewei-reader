@@ -1,9 +1,18 @@
 import 'dart:io';
+import 'package:drift/drift.dart' show driftRuntimeOptions;
+import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:yuewei_reader/app/providers.dart';
+import 'package:yuewei_reader/core/database/app_database.dart';
+import 'package:yuewei_reader/core/network/app_http_client.dart';
+import 'package:yuewei_reader/design_system/components/single_swipe_tile.dart';
 import 'package:yuewei_reader/design_system/feedback/app_feedback.dart';
 import 'package:yuewei_reader/design_system/tokens/soft_tokens.dart';
 import 'package:yuewei_reader/features/reader/engine/page_models.dart';
+import 'package:yuewei_reader/features/sources/data/source_repository.dart';
+import 'package:yuewei_reader/features/sources/presentation/sources_page.dart';
 
 void main() {
   group('Modern Soft UI v4 对比度与设计防线测试', () {
@@ -155,6 +164,93 @@ void main() {
       expect(find.text('已移出第二本'), findsNothing);
       expect(undone2, isFalse);
       expect(committed2, isTrue);
+    });
+
+    testWidgets('SingleSwipeTile 切 Tab 离屏 TickerMode 冻结时瞬间归零无残影', (tester) async {
+      final coordinator = SwipeCoordinator();
+      addTearDown(coordinator.dispose);
+      var tickerEnabled = true;
+      late StateSetter outerSetState;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: SoftTokens.resolve(SoftPalette.mistyJade, isDark: false).toThemeData(),
+          home: Scaffold(
+            body: StatefulBuilder(
+              builder: (context, setState) {
+                outerSetState = setState;
+                return TickerMode(
+                  enabled: tickerEnabled,
+                  child: SingleSwipeTile(
+                    itemId: 'book_1',
+                    coordinator: coordinator,
+                    actionLabel: '移出书架',
+                    actionIcon: Icons.delete_outline,
+                    onAction: () {},
+                    child: const SizedBox(height: 72.0, width: 320.0, child: Text('测试书籍卡片')),
+                  ),
+                );
+              },
+            ),
+          ),
+        ),
+      );
+
+      // 模拟左滑展开操作按钮
+      await tester.drag(find.text('测试书籍卡片'), const Offset(-84.0, 0.0));
+      await tester.pumpAndSettle();
+      expect(find.text('移出书架'), findsOneWidget);
+
+      // 模拟切换 Tab：先触发 closeAll() 动画同时离屏 TickerMode 置 false
+      outerSetState(() {
+        coordinator.closeAll();
+        tickerEnabled = false;
+      });
+      await tester.pump();
+      expect(find.text('移出书架'), findsNothing);
+
+      // 切回 Tab 恢复 TickerMode，必须保持彻底收起无动画残影
+      outerSetState(() => tickerEnabled = true);
+      await tester.pump();
+      expect(find.text('移出书架'), findsNothing);
+    });
+
+    testWidgets('SourcesPage 删除当前选中自定义分组最后一条后自动回落「全部」', (tester) async {
+      driftRuntimeOptions.dontWarnAboutMultipleDatabases = true;
+      final db = AppDatabase(NativeDatabase.memory());
+      addTearDown(db.close);
+      await tester.runAsync(() async {
+        final repo = SourceRepository(db: db, httpClient: AppHttpClient());
+        await repo.ensureBuiltinSourcesSeeded();
+        await repo.importLegadoJson(
+          '[{"bookSourceName":"仅此一条","bookSourceUrl":"https://only.example.com","bookSourceGroup":"独木组","searchUrl":"/s?q={{key}}","ruleSearch":{"bookList":".b","name":"h3","bookUrl":"a@href"},"ruleToc":{"chapterList":".c a","chapterName":"text","chapterUrl":"href"},"ruleContent":{"content":"#c"}}]',
+        );
+      });
+
+      await tester.pumpWidget(ProviderScope(
+        overrides: [appDatabaseProvider.overrideWithValue(db)],
+        child: MaterialApp(
+          theme: SoftTokens.resolve(SoftPalette.mistyJade, isDark: false).toThemeData(),
+          home: const SourcesPage(),
+        ),
+      ));
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('独木组 (1)'));
+      await tester.pumpAndSettle();
+      expect(find.text('仅此一条'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('删除此书源'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('删除'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('该分组暂无书源'), findsNothing);
+      expect(find.text('独木组 (1)'), findsNothing);
+      expect(find.text('影书笔趣阁'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump(const Duration(seconds: 1));
     });
   });
 }

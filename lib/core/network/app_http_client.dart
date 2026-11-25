@@ -11,7 +11,7 @@ class AppHttpClient {
   static Dio _buildDefaultDio() {
     return Dio(
       BaseOptions(
-        connectTimeout: const Duration(seconds: 6),
+        connectTimeout: const Duration(seconds: 8),
         receiveTimeout: const Duration(seconds: 9),
         sendTimeout: const Duration(seconds: 6),
         followRedirects: true,
@@ -113,7 +113,7 @@ class AppHttpClient {
   }
 
   /// 轻量 HEAD/GET 探活测速
-  Future<int> ping(String url, {Duration timeout = const Duration(seconds: 4)}) async {
+  Future<int> ping(String url, {Duration timeout = const Duration(seconds: 8)}) async {
     final sw = Stopwatch()..start();
     final resp = await _dio.get<List<int>>(
       url,

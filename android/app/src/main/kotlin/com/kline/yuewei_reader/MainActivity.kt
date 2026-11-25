@@ -25,6 +25,7 @@ class MainActivity : FlutterActivity() {
     private var hostChannel: MethodChannel? = null
     private var pendingFilePickerResult: MethodChannel.Result? = null
     private val ioExecutor = Executors.newSingleThreadExecutor()
+    private var ttsAndBackupHelper: NativeTtsAndBackupHelper? = null
 
     @Volatile
     private var volumeKeyInterceptEnabled: Boolean = false
@@ -33,6 +34,9 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
         hostChannel = channel
+        ttsAndBackupHelper?.shutdown()
+        val helper = NativeTtsAndBackupHelper(this, ioExecutor) { hostChannel }
+        ttsAndBackupHelper = helper
         channel.setMethodCallHandler { call, result ->
             when (call.method) {
                 "getHostCapabilities" -> {
@@ -79,7 +83,7 @@ class MainActivity : FlutterActivity() {
                 }
 
                 "pickLocalBookFile" -> {
-                    if (pendingFilePickerResult != null) {
+                    if (pendingFilePickerResult != null || helper.isBusy) {
                         result.error("PICKER_BUSY", "已有文件选择请求正在进行", null)
                         return@setMethodCallHandler
                     }
@@ -105,6 +109,35 @@ class MainActivity : FlutterActivity() {
                     }
                 }
 
+                "ttsSpeak" -> {
+                    val text = call.argument<String>("text") ?: ""
+                    val utteranceId = call.argument<String>("utteranceId") ?: ""
+                    val rate = call.argument<Number>("rate")?.toFloat() ?: 1.0f
+                    helper.ttsSpeak(text, utteranceId, rate, result)
+                }
+
+                "ttsStop" -> helper.ttsStop(result)
+
+                "ttsIsAvailable" -> helper.ttsIsAvailable(result)
+
+                "exportTextFile" -> {
+                    val fileName = call.argument<String>("fileName") ?: "yuewei_backup.json"
+                    val content = call.argument<String>("content") ?: ""
+                    helper.exportTextFile(
+                        fileName = fileName,
+                        content = content,
+                        isHostBusy = pendingFilePickerResult != null,
+                        result = result
+                    )
+                }
+
+                "pickAndReadTextFile" -> {
+                    helper.pickAndReadTextFile(
+                        isHostBusy = pendingFilePickerResult != null,
+                        result = result
+                    )
+                }
+
                 else -> result.notImplemented()
             }
         }
@@ -112,6 +145,9 @@ class MainActivity : FlutterActivity() {
 
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (ttsAndBackupHelper?.onActivityResult(requestCode, resultCode, data) == true) {
+            return
+        }
         if (requestCode != pickBookRequestCode) {
             @Suppress("DEPRECATION")
             super.onActivityResult(requestCode, resultCode, data)
@@ -154,10 +190,14 @@ class MainActivity : FlutterActivity() {
                     "name" to displayName,
                     "size" to destFile.length()
                 )
-                runOnUiThread { pending.success(payload) }
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) pending.success(payload)
+                }
             } catch (e: Exception) {
                 runOnUiThread {
-                    pending.error("COPY_FAILED", e.message ?: "读取选中文件失败", null)
+                    if (!isFinishing && !isDestroyed) {
+                        pending.error("COPY_FAILED", e.message ?: "读取选中文件失败", null)
+                    }
                 }
             }
         }
@@ -213,10 +253,30 @@ class MainActivity : FlutterActivity() {
         return super.onKeyDown(keyCode, event)
     }
 
+    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+        if (volumeKeyInterceptEnabled &&
+            (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_UP)
+        ) {
+            return true
+        }
+        return super.onKeyUp(keyCode, event)
+    }
+
+    override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        volumeKeyInterceptEnabled = false
+        hostChannel?.setMethodCallHandler(null)
+        hostChannel = null
+        ttsAndBackupHelper?.shutdown()
+        ttsAndBackupHelper = null
+        super.cleanUpFlutterEngine(flutterEngine)
+    }
+
     override fun onDestroy() {
         volumeKeyInterceptEnabled = false
         pendingFilePickerResult?.success(null)
         pendingFilePickerResult = null
+        ttsAndBackupHelper?.shutdown()
+        ttsAndBackupHelper = null
         ioExecutor.shutdownNow()
         super.onDestroy()
     }

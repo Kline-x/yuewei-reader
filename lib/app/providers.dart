@@ -12,6 +12,7 @@ import '../features/local_import/wifi/wifi_transfer_server.dart';
 import '../features/shelf/data/shelf_repository.dart';
 import '../features/sources/data/source_repository.dart';
 import '../features/sources/engine/source_crawler_service.dart';
+import '../features/sync/backup_snapshot_codec.dart';
 
 final sharedPrefsProvider = Provider<SharedPreferences?>((ref) => null);
 
@@ -73,6 +74,10 @@ final wifiTransferServerProvider = Provider<WifiTransferServer>((ref) {
   );
   ref.onDispose(() => server.dispose());
   return server;
+});
+
+final backupSnapshotCodecProvider = Provider<BackupSnapshotCodec>((ref) {
+  return BackupSnapshotCodec(db: ref.watch(appDatabaseProvider));
 });
 
 @immutable

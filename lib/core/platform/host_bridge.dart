@@ -48,24 +48,46 @@ class HostBridge {
   }
 
   static final HostBridge instance = HostBridge._();
-  static const MethodChannel _channel = MethodChannel('com.kline.yuewei/host_bridge');
+  static const MethodChannel _channel =
+      MethodChannel('com.kline.yuewei/host_bridge');
 
   final StreamController<VolumeKeyEvent> _volumeController =
       StreamController<VolumeKeyEvent>.broadcast();
+  final StreamController<({String utteranceId, bool isError, String? message})>
+      _ttsEventController = StreamController<
+          ({String utteranceId, bool isError, String? message})>.broadcast();
 
   HostCapabilities _capabilities = HostCapabilities.fallback;
   bool _initialized = false;
 
   HostCapabilities get capabilities => _capabilities;
   Stream<VolumeKeyEvent> get volumeKeyStream => _volumeController.stream;
+  Stream<({String utteranceId, bool isError, String? message})>
+      get ttsEventStream => _ttsEventController.stream;
 
   Future<dynamic> _handleNativeCall(MethodCall call) async {
+    final args = call.arguments;
+    final map = args is Map ? args : const <String, dynamic>{};
     switch (call.method) {
       case 'onVolumeDown':
         _volumeController.add(VolumeKeyEvent.down);
         return true;
       case 'onVolumeUp':
         _volumeController.add(VolumeKeyEvent.up);
+        return true;
+      case 'onTtsDone':
+        _ttsEventController.add((
+          utteranceId: (map['utteranceId'] as String?) ?? '',
+          isError: false,
+          message: null,
+        ));
+        return true;
+      case 'onTtsError':
+        _ttsEventController.add((
+          utteranceId: (map['utteranceId'] as String?) ?? '',
+          isError: true,
+          message: map['message'] as String?,
+        ));
         return true;
       default:
         return null;
@@ -98,7 +120,8 @@ class HostBridge {
 
   /// 受控开关物理音量键拦截：仅阅读中且无遮罩弹窗时开启，其余归还系统调音
   Future<void> setVolumeKeyIntercept(bool enabled) async {
-    if (!_capabilities.supportsVolumeKeyPaging && defaultTargetPlatform != TargetPlatform.android) {
+    if (!_capabilities.supportsVolumeKeyPaging &&
+        defaultTargetPlatform != TargetPlatform.android) {
       return;
     }
     try {
@@ -132,6 +155,85 @@ class HostBridge {
         size: size,
       );
     } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  /// 原生 TTS 朗读指定文本段落
+  Future<bool> ttsSpeak({
+    required String text,
+    required String utteranceId,
+    double rate = 1.0,
+  }) async {
+    try {
+      final ok = await _channel.invokeMethod<bool>('ttsSpeak', {
+        'text': text,
+        'utteranceId': utteranceId,
+        'rate': rate,
+      });
+      return ok ?? false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  /// 停止当前原生 TTS 朗读
+  Future<bool> ttsStop() async {
+    try {
+      return (await _channel.invokeMethod<bool>('ttsStop')) ?? false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  /// 查询当前宿主原生 TTS 引擎是否可用
+  Future<bool> ttsIsAvailable() async {
+    try {
+      return (await _channel.invokeMethod<bool>('ttsIsAvailable')) ?? false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  /// 调起系统保存选择器导出 UTF-8 文本文件（JSON/TXT），取消返回 null
+  Future<String?> exportTextFile({
+    required String fileName,
+    required String content,
+  }) async {
+    try {
+      final saved = await _channel.invokeMethod<String>('exportTextFile', {
+        'fileName': fileName,
+        'content': content,
+      });
+      return (saved == null || saved.trim().isEmpty) ? null : saved;
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  /// 调起系统打开选择器读取 UTF-8 文本文件（JSON/TXT），取消返回 null
+  Future<({String name, String content})?> pickAndReadTextFile() async {
+    try {
+      final raw = await _channel.invokeMapMethod<String, dynamic>(
+        'pickAndReadTextFile',
+      );
+      final content = raw?['content'] as String?;
+      if (raw == null || content == null) return null;
+      final name = (raw['name'] as String?)?.trim() ?? '';
+      return (name: name.isNotEmpty ? name : 'imported.json', content: content);
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
       return null;
     }
   }

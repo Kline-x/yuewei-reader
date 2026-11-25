@@ -6,6 +6,7 @@ import '../../../core/storage/chapter_file_store.dart';
 import '../../../design_system/feedback/app_feedback.dart';
 import '../engine/reader_chapter_loader.dart';
 import '../engine/reader_slide_window.dart';
+import '../../tts/tts_control_sheet.dart';
 import 'reader_bookmark_sheet.dart';
 import 'reader_catalog_sheet.dart';
 import 'reader_download_sheet.dart';
@@ -166,5 +167,12 @@ class ReaderSheetsLauncher {
     required Future<void> Function(Future<void> Function() task) runWithGuard,
   }) {
     return runWithGuard(() => ReaderTypographySheet.show(context));
+  }
+
+  static Future<void> openTtsControlSheet({
+    required BuildContext context,
+    required Future<void> Function(Future<void> Function() task) runWithGuard,
+  }) {
+    return runWithGuard(() => TtsControlSheet.show(context));
   }
 }

@@ -13,6 +13,7 @@ import '../features/settings/presentation/settings_page.dart';
 import '../features/shelf/presentation/shelf_page.dart';
 import '../features/sources/domain/book_match_models.dart';
 import '../features/sources/presentation/sources_page.dart';
+import '../features/sync/presentation/sync_and_backup_page.dart';
 import 'providers.dart';
 
 final GlobalKey<NavigatorState> _rootNavigatorKey = GlobalKey<NavigatorState>();
@@ -57,6 +58,11 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         path: '/sources',
         parentNavigatorKey: _rootNavigatorKey,
         builder: (_, _) => const SourcesPage(),
+      ),
+      GoRoute(
+        path: '/sync',
+        parentNavigatorKey: _rootNavigatorKey,
+        builder: (_, _) => const SyncAndBackupPage(),
       ),
       GoRoute(
         path: '/import',

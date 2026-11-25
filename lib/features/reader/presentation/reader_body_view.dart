@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../../design_system/components/empty_error_view.dart';
+import '../../tts/tts_control_sheet.dart';
 import '../engine/page_models.dart';
 import '../engine/reader_page_slot.dart';
 import 'reader_overlay_bars.dart';
@@ -31,6 +32,9 @@ class ReaderBodyView extends StatelessWidget {
     required this.inShelf,
     this.isBookmarked = false,
     this.isLocalBook = false,
+    this.isTtsActive = false,
+    this.isTtsPlaying = false,
+    this.ttsSleepBadge = '',
     required this.onRetry,
     required this.onToggleMenu,
     required this.onCommitNext,
@@ -39,6 +43,8 @@ class ReaderBodyView extends StatelessWidget {
     required this.onRequestPrevChapter,
     required this.onScrollChapterProgress,
     required this.onBack,
+    this.onTapTts,
+    this.onToggleTtsPlayPause,
     required this.onToggleBookmark,
     required this.onOpenSource,
     required this.onAddToShelf,
@@ -73,6 +79,9 @@ class ReaderBodyView extends StatelessWidget {
   final bool inShelf;
   final bool isBookmarked;
   final bool isLocalBook;
+  final bool isTtsActive;
+  final bool isTtsPlaying;
+  final String ttsSleepBadge;
   final VoidCallback onRetry;
   final VoidCallback onToggleMenu;
   final VoidCallback onCommitNext;
@@ -81,6 +90,8 @@ class ReaderBodyView extends StatelessWidget {
   final VoidCallback onRequestPrevChapter;
   final void Function(int chapterIndex, int charOffset) onScrollChapterProgress;
   final VoidCallback onBack;
+  final VoidCallback? onTapTts;
+  final VoidCallback? onToggleTtsPlayPause;
   final VoidCallback onToggleBookmark;
   final VoidCallback onOpenSource;
   final VoidCallback onAddToShelf;
@@ -132,6 +143,20 @@ class ReaderBodyView extends StatelessWidget {
             onRequestPrevChapter: onRequestPrevChapter,
             onScrollChapterProgress: onScrollChapterProgress,
           ),
+        if (!menuVisible &&
+            isTtsActive &&
+            !loading &&
+            errorMsg == null &&
+            currentItem != null &&
+            onTapTts != null)
+          ReaderTtsFloatingPill(
+            paper: paper,
+            botSafe: botSafe,
+            isPlaying: isTtsPlaying,
+            sleepBadge: ttsSleepBadge,
+            onTapExpand: onTapTts!,
+            onTogglePlayPause: onToggleTtsPlayPause ?? () {},
+          ),
         if (menuVisible) ...[
           ReaderTopBar(
             paper: paper,
@@ -141,7 +166,9 @@ class ReaderBodyView extends StatelessWidget {
             inShelf: inShelf,
             isBookmarked: isBookmarked,
             isLocalBook: isLocalBook,
+            isTtsActive: isTtsActive,
             onBack: onBack,
+            onTapTts: onTapTts,
             onToggleBookmark: onToggleBookmark,
             onOpenSource: onOpenSource,
             onAddToShelf: onAddToShelf,

@@ -66,6 +66,17 @@ class _SingleSwipeTileState extends State<SingleSwipeTile>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!TickerMode.valuesOf(context).enabled &&
+        (_ctrl.isAnimating || _ctrl.value != 0.0 || _dragExtent != 0.0)) {
+      _ctrl.stop();
+      _ctrl.value = 0.0;
+      _dragExtent = 0.0;
+    }
+  }
+
+  @override
   void didUpdateWidget(covariant SingleSwipeTile oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.coordinator != widget.coordinator) {
@@ -95,9 +106,20 @@ class _SingleSwipeTileState extends State<SingleSwipeTile>
     if (open) {
       widget.coordinator.open(widget.itemId);
       _ctrl.animateTo(1.0, curve: Curves.easeOutCubic);
-    } else {
-      _ctrl.animateTo(0.0, curve: Curves.easeOutCubic);
+      return;
     }
+    // 离屏分支 TickerMode 冻结时直接瞬间归零，杜绝切 Tab 后切回闪现动画残影
+    if (!TickerMode.valuesOf(context).enabled) {
+      _ctrl.stop();
+      _ctrl.value = 0.0;
+      if (mounted && _dragExtent != 0.0) {
+        setState(() => _dragExtent = 0.0);
+      } else {
+        _dragExtent = 0.0;
+      }
+      return;
+    }
+    _ctrl.animateTo(0.0, curve: Curves.easeOutCubic);
   }
 
   @override

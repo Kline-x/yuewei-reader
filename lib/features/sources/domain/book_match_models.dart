@@ -56,9 +56,34 @@ class AggregatedBookMatch {
   String get bestCoverUrl => hits
       .map((h) => h.coverUrl)
       .firstWhere((c) => c.isNotEmpty, orElse: () => '');
-  String get bestIntro => hits
-      .map((h) => h.intro)
-      .firstWhere((i) => i.isNotEmpty, orElse: () => '');
+  String get bestIntro {
+    var best = '';
+    var bestScore = 0;
+    for (final hit in hits) {
+      final candidate = hit.intro.trim();
+      final score = _introQualityScore(candidate);
+      if (score > bestScore) {
+        bestScore = score;
+        best = candidate;
+      }
+    }
+    return best;
+  }
+
+  static final RegExp _introNoiseRe = RegExp(
+    r'[\s\.\u2026·,，。!！?？:：;；\-—_~`"\x27“”‘’()（）【】\[\]《》<>]+',
+  );
+  static final RegExp _introPlaceholderRe = RegExp(
+    r'^(?:暂无|无)?(?:内容|作品|书籍)?(?:简介|介绍|描述)(?:暂无)?$',
+  );
+
+  /// 过滤省略号、常见占位词或有效内容不足 4 字的无效简介，有效串返回核心字符长度用于择优
+  static int _introQualityScore(String raw) {
+    if (raw.isEmpty) return 0;
+    final core = raw.replaceAll(_introNoiseRe, '');
+    if (core.length < 4 || _introPlaceholderRe.hasMatch(core)) return 0;
+    return core.length;
+  }
   int get fastestLatencyMs =>
       hits.map((h) => h.latencyMs).reduce((a, b) => a < b ? a : b);
   int get sourceCount => hits.length;

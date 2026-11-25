@@ -8,6 +8,7 @@ import '../../../core/database/bookmark_dao.dart';
 import '../../../core/platform/host_bridge.dart';
 import '../../../core/storage/chapter_file_store.dart';
 import '../../../design_system/feedback/app_feedback.dart';
+import '../../tts/tts_controller.dart';
 import '../engine/page_models.dart';
 import 'reader_body_view.dart';
 import 'reader_bookmark_helper.dart';
@@ -15,6 +16,7 @@ import 'reader_pager_views.dart';
 import 'reader_session_controller.dart';
 import 'reader_settings_provider.dart';
 import 'reader_sheets_launcher.dart';
+import 'reader_tts_binding.dart';
 
 /// 沉浸纸感阅读器主视图（宿主机控制 + 翻页视口装配，≤ 350 行）
 class ReaderPage extends ConsumerStatefulWidget {
@@ -34,6 +36,7 @@ class ReaderPage extends ConsumerStatefulWidget {
 class _ReaderPageState extends ConsumerState<ReaderPage> {
   GlobalKey<ReaderPagerViewsState> _pagerKey = GlobalKey();
   late final ReaderSessionController _session;
+  late final TtsController _ttsNotifier;
   late final Stream<List<Bookmark>> _bookmarksStream;
   StreamSubscription<VolumeKeyEvent>? _volumeSub;
 
@@ -48,6 +51,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
     super.initState();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     _volumeSub = HostBridge.instance.volumeKeyStream.listen(_onVolumeKey);
+    _ttsNotifier = ref.read(ttsControllerProvider.notifier);
     final db = ref.read(appDatabaseProvider);
     _bookmarksStream = db.watchBookmarksByBook(widget.bookId);
     _session = ReaderSessionController(
@@ -60,10 +64,12 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
         }
       },
     )..bootstrap(widget.initialChapterIndex);
+    ReaderTtsBinding.attach(owner: this, tts: _ttsNotifier, session: _session);
   }
 
   @override
   void dispose() {
+    _ttsNotifier.unbindAndStopOnDispose(this);
     _volumeSub?.cancel();
     HostBridge.instance.setVolumeKeyIntercept(false);
     HostBridge.instance.keepScreenOn(false);
@@ -72,9 +78,13 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
     super.dispose();
   }
 
-  void _syncHostControls(ReaderSettingsState settings) {
+  void _syncHostControls(
+    ReaderSettingsState settings, {
+    required bool isTtsActive,
+  }) {
+    // 听书活跃态主动释放物理音量键拦截，交还系统调节媒体音量
     final allowIntercept =
-        settings.volumeKeyPaging && !_menuVisible && !_sheetOpen;
+        settings.volumeKeyPaging && !_menuVisible && !_sheetOpen && !isTtsActive;
     if (_lastIntercept != allowIntercept) {
       _lastIntercept = allowIntercept;
       HostBridge.instance.setVolumeKeyIntercept(allowIntercept);
@@ -86,7 +96,15 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
   }
 
   void _onVolumeKey(VolumeKeyEvent event) {
-    if (!mounted || _session.loading || _menuVisible || _sheetOpen) return;
+    final tts = ref.read(ttsControllerProvider);
+    final isTtsActive = tts.isActive && tts.bookId == widget.bookId;
+    if (!mounted ||
+        _session.loading ||
+        _menuVisible ||
+        _sheetOpen ||
+        isTtsActive) {
+      return;
+    }
     event == VolumeKeyEvent.down
         ? _pagerKey.currentState?.turnNextAnimated()
         : _pagerKey.currentState?.turnPrevAnimated();
@@ -114,9 +132,11 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
   @override
   Widget build(BuildContext context) {
     final settings = ref.watch(readerSettingsProvider);
+    final tts = ref.watch(ttsControllerProvider);
+    final ttsForBook = tts.isActive && tts.bookId == widget.bookId;
     final paper =
         settings.effectiveTheme(MediaQuery.platformBrightnessOf(context));
-    _syncHostControls(settings);
+    _syncHostControls(settings, isTtsActive: ttsForBook);
 
     final overlayStyle =
         (paper.isDark ? SystemUiOverlayStyle.light : SystemUiOverlayStyle.dark)
@@ -157,7 +177,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
                       viewportWidth: constraints.maxWidth,
                       viewportHeight: constraints.maxHeight,
                       topPadding: topSafe + 34.0,
-                      bottomPadding: botSafe + 28.0,
+                      bottomPadding: botSafe + (ttsForBook ? 72.0 : 28.0),
                     );
                     _session.syncForBuild(config, settings.turnMode);
                     final slots = _session.buildSlots();
@@ -198,6 +218,9 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
                       inShelf: _session.book?.isInShelf ?? false,
                       isBookmarked: isBookmarked,
                       isLocalBook: isLocalBook,
+                      isTtsActive: ttsForBook,
+                      isTtsPlaying: tts.isPlaying,
+                      ttsSleepBadge: tts.formattedSleepBadge,
                       onRetry: () => _session.loadChapter(_session.chapterIndex),
                       onToggleMenu: () => _setMenuVisible(!_menuVisible),
                       onCommitNext: _session.commitNext,
@@ -210,6 +233,17 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
                       onScrollChapterProgress:
                           _session.handleScrollChapterProgress,
                       onBack: () => Navigator.of(context).pop(),
+                      onTapTts: () => ReaderTtsBinding.onTapHeadphone(
+                        context: context,
+                        ttsState: tts,
+                        ttsNotifier: _ttsNotifier,
+                        session: _session,
+                        currentItem: slots.current,
+                        isScrollMode: isScrollMode,
+                        setMenuVisible: _setMenuVisible,
+                        runWithGuard: _runWithSheetGuard,
+                      ),
+                      onToggleTtsPlayPause: _ttsNotifier.togglePlayPause,
                       onToggleBookmark: () =>
                           ReaderBookmarkHelper.toggleCurrentBookmark(
                         context: context,

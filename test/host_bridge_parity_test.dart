@@ -38,6 +38,11 @@ void main() {
         'setVolumeKeyIntercept',
         'keepScreenOn',
         'pickLocalBookFile',
+        'ttsSpeak',
+        'ttsStop',
+        'ttsIsAvailable',
+        'exportTextFile',
+        'pickAndReadTextFile',
       ]) {
         expect(ktText, contains(method), reason: 'Android 缺少宿主方法 $method');
         expect(swiftText, contains(method), reason: 'iOS 缺少宿主方法 $method');

@@ -13,7 +13,9 @@ class ReaderTopBar extends StatelessWidget {
     required this.inShelf,
     this.isBookmarked = false,
     this.isLocalBook = false,
+    this.isTtsActive = false,
     required this.onBack,
+    this.onTapTts,
     required this.onToggleBookmark,
     required this.onOpenSource,
     required this.onAddToShelf,
@@ -27,13 +29,15 @@ class ReaderTopBar extends StatelessWidget {
   final bool inShelf;
   final bool isBookmarked;
   final bool isLocalBook;
+  final bool isTtsActive;
   final VoidCallback onBack;
+  final VoidCallback? onTapTts;
   final VoidCallback onToggleBookmark;
   final VoidCallback onOpenSource;
   final VoidCallback onAddToShelf;
   final VoidCallback onOpenDownload;
 
-  static const BoxConstraints _btnConstraints = BoxConstraints(minWidth: 38.0, minHeight: 44.0);
+  static const BoxConstraints _btnConstraints = BoxConstraints(minWidth: 36.0, minHeight: 44.0);
 
   @override
   Widget build(BuildContext context) {
@@ -64,6 +68,12 @@ class ReaderTopBar extends StatelessWidget {
                 ],
               ),
             ),
+            if (onTapTts != null)
+              IconButton(
+                tooltip: isTtsActive ? '听书控制' : '听书朗读',
+                constraints: _btnConstraints, padding: EdgeInsets.zero, onPressed: onTapTts,
+                icon: Icon(Icons.headphones_rounded, color: isTtsActive ? paper.accent : paper.textColor),
+              ),
             IconButton(
               tooltip: isBookmarked ? '移除书签' : '添加书签',
               constraints: _btnConstraints, padding: EdgeInsets.zero, onPressed: onToggleBookmark,
