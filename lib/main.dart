@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -6,6 +8,8 @@ import 'app/providers.dart';
 import 'app/router.dart';
 import 'core/platform/host_bridge.dart';
 import 'design_system/tokens/soft_tokens.dart';
+import 'features/update/app_update_dialog.dart';
+import 'features/update/app_update_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -35,10 +39,62 @@ class YueweiApp extends ConsumerStatefulWidget {
 }
 
 class _YueweiAppState extends ConsumerState<YueweiApp> {
+  Timer? _autoUpdateTimer;
+  CancelToken? _autoUpdateCancelToken;
+
   @override
   void initState() {
     super.initState();
-    ref.read(sourceRepositoryProvider).ensureBuiltinSourcesSeeded();
+    unawaited(
+      ref.read(sourceRepositoryProvider).ensureBuiltinSourcesSeeded().catchError(
+        (Object error, StackTrace stackTrace) {
+          debugPrint('内置书源初始化异常: $error');
+        },
+      ),
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _autoUpdateTimer = Timer(
+        const Duration(seconds: 2),
+        () => unawaited(_runSilentAutoUpdateCheck()),
+      );
+    });
+  }
+
+  Future<void> _runSilentAutoUpdateCheck() async {
+    if (!mounted) return;
+    final token = CancelToken();
+    _autoUpdateCancelToken = token;
+    try {
+      final controller = ref.read(appUpdateControllerProvider.notifier);
+      final result = await controller.checkAuto(cancelToken: token);
+      if (!mounted || !result.hasUpdate || result.release == null) return;
+
+      final navContext =
+          ref.read(appRouterProvider).routerDelegate.navigatorKey.currentContext;
+      if (navContext == null || !navContext.mounted) return;
+
+      final service = ref.read(appUpdateServiceProvider);
+      await showAppUpdateDialog(
+        navContext,
+        release: result.release!,
+        currentVersion: result.currentVersion,
+        service: service,
+        supportsInAppApkInstall: service.supportsInAppApkInstall,
+        onIgnored: () => controller.ignoreRelease(result.release!),
+      );
+    } catch (error) {
+      debugPrint('启动静默检查更新忽略异常: $error');
+    }
+  }
+
+  @override
+  void dispose() {
+    _autoUpdateTimer?.cancel();
+    _autoUpdateTimer = null;
+    _autoUpdateCancelToken?.cancel('app_disposed');
+    _autoUpdateCancelToken = null;
+    super.dispose();
   }
 
   @override

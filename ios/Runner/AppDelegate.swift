@@ -30,6 +30,18 @@ import UniformTypeIdentifiers
   }()
   fileprivate var activeUtterance: AVSpeechUtterance?
   fileprivate var activeUtteranceId: String?
+  fileprivate var audioInterruptionObserverRegistered: Bool = false
+
+  deinit {
+    if audioInterruptionObserverRegistered {
+      NotificationCenter.default.removeObserver(
+        self,
+        name: AVAudioSession.interruptionNotification,
+        object: AVAudioSession.sharedInstance()
+      )
+      audioInterruptionObserverRegistered = false
+    }
+  }
 
   fileprivate var isAnyPickerBusy: Bool {
     return pendingBookPickerResult != nil
@@ -50,6 +62,7 @@ import UniformTypeIdentifiers
     let messenger = engineBridge.applicationRegistrar.messenger()
     let channel = FlutterMethodChannel(name: channelName, binaryMessenger: messenger)
     hostChannel = channel
+    registerAudioInterruptionObserverIfNeeded()
 
     channel.setMethodCallHandler { [weak self] call, result in
       guard let self = self else {
@@ -99,6 +112,12 @@ import UniformTypeIdentifiers
       case "pickAndReadTextFile":
         self.presentPickTextPicker(result: result)
 
+      case "installApk":
+        result("UNSUPPORTED")
+
+      case "openExternalUrl":
+        self.handleOpenExternalUrl(call: call, result: result)
+
       default:
         result(FlutterMethodNotImplemented)
       }
@@ -113,9 +132,36 @@ import UniformTypeIdentifiers
     let rootWindow = sceneWindow ?? self.window
     var top = rootWindow?.rootViewController
     while let presented = top?.presentedViewController {
+      if presented.isBeingDismissed {
+        break
+      }
       top = presented
     }
+    while let current = top, current.isBeingDismissed {
+      top = current.presentingViewController
+    }
     return top
+  }
+
+  private func handleOpenExternalUrl(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    let args = call.arguments as? [String: Any]
+    let rawUrl = ((args?["url"] as? String) ?? "")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard
+      let url = URL(string: rawUrl),
+      let scheme = url.scheme?.lowercased(),
+      (scheme == "http" || scheme == "https"),
+      let host = url.host,
+      !host.isEmpty
+    else {
+      result(false)
+      return
+    }
+    DispatchQueue.main.async {
+      UIApplication.shared.open(url, options: [:]) { success in
+        result(success)
+      }
+    }
   }
 
   private func presentBookPicker(result: @escaping FlutterResult) {
@@ -128,7 +174,11 @@ import UniformTypeIdentifiers
         result(FlutterError(code: "PICKER_BUSY", message: "已有文件选择请求正在进行", details: nil))
         return
       }
-      guard let presenter = self.topViewController() else {
+      guard
+        let presenter = self.topViewController(),
+        !presenter.isBeingDismissed,
+        presenter.presentedViewController == nil
+      else {
         result(FlutterError(code: "NO_VIEW_CONTROLLER", message: "未找到可用界面上下文", details: nil))
         return
       }
@@ -316,6 +366,83 @@ import UniformTypeIdentifiers
 
 // MARK: - 原生 TTS 语音合成与备份文件读写扩展
 extension AppDelegate: AVSpeechSynthesizerDelegate {
+  fileprivate func registerAudioInterruptionObserverIfNeeded() {
+    guard !audioInterruptionObserverRegistered else { return }
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(handleAudioSessionInterruption(_:)),
+      name: AVAudioSession.interruptionNotification,
+      object: AVAudioSession.sharedInstance()
+    )
+    audioInterruptionObserverRegistered = true
+  }
+
+  @objc fileprivate func handleAudioSessionInterruption(_ notification: Notification) {
+    guard
+      let userInfo = notification.userInfo,
+      let rawType = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+      let type = AVAudioSession.InterruptionType(rawValue: rawType)
+    else {
+      return
+    }
+    if type == .began {
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self else { return }
+        let interruptedUid = self.activeUtteranceId
+        self.activeUtterance = nil
+        self.activeUtteranceId = nil
+        if self.speechSynthesizer.isSpeaking || self.speechSynthesizer.isPaused {
+          self.speechSynthesizer.stopSpeaking(at: .immediate)
+        }
+        if let uid = interruptedUid, !uid.isEmpty {
+          self.hostChannel?.invokeMethod(
+            "onTtsError",
+            arguments: [
+              "utteranceId": uid,
+              "message": "语音播放被系统打断",
+            ]
+          )
+        }
+      }
+    }
+  }
+
+  /// 校准 iOS AVSpeechUtterance.rate 非线性映射曲线，避免高倍速发声极度失真
+  fileprivate static func mapIosSpeechRate(_ rateFactor: Float) -> Float {
+    let anchors: [(Float, Float)] = [
+      (0.75, 0.42),
+      (1.00, 0.50),
+      (1.25, 0.55),
+      (1.50, 0.60),
+      (1.75, 0.64),
+    ]
+    let raw: Float
+    if rateFactor <= anchors[0].0 {
+      let slope = (anchors[1].1 - anchors[0].1) / (anchors[1].0 - anchors[0].0)
+      raw = anchors[0].1 + (rateFactor - anchors[0].0) * slope
+    } else if rateFactor >= anchors[anchors.count - 1].0 {
+      let last = anchors.count - 1
+      let slope =
+        (anchors[last].1 - anchors[last - 1].1) / (anchors[last].0 - anchors[last - 1].0)
+      raw = anchors[last].1 + (rateFactor - anchors[last].0) * slope
+    } else {
+      var interpolated = anchors[1].1
+      for idx in 0..<(anchors.count - 1) {
+        let (x0, y0) = anchors[idx]
+        let (x1, y1) = anchors[idx + 1]
+        if rateFactor >= x0 && rateFactor <= x1 {
+          let t = (rateFactor - x0) / (x1 - x0)
+          interpolated = y0 + (y1 - y0) * t
+          break
+        }
+      }
+      raw = interpolated
+    }
+    let safeMin = max(AVSpeechUtteranceMinimumSpeechRate, 0.30)
+    let safeMax = min(AVSpeechUtteranceMaximumSpeechRate, 0.72)
+    return min(max(raw, safeMin), safeMax)
+  }
+
   fileprivate func handleTtsSpeak(call: FlutterMethodCall, result: @escaping FlutterResult) {
     let args = call.arguments as? [String: Any]
     let text = (args?["text"] as? String) ?? ""
@@ -332,6 +459,7 @@ extension AppDelegate: AVSpeechSynthesizerDelegate {
         result(false)
         return
       }
+      self.registerAudioInterruptionObserverIfNeeded()
       // 先清空当前活跃标记再停止上一句，防止 didCancel / 延迟回调误触发
       self.activeUtterance = nil
       self.activeUtteranceId = nil
@@ -349,11 +477,7 @@ extension AppDelegate: AVSpeechSynthesizerDelegate {
         ?? AVSpeechSynthesisVoice(language: "zh-Hans")
         ?? AVSpeechSynthesisVoice(language: "zh-TW")
 
-      let scaledRate = AVSpeechUtteranceDefaultSpeechRate * rateFactor
-      utterance.rate = min(
-        max(scaledRate, AVSpeechUtteranceMinimumSpeechRate),
-        AVSpeechUtteranceMaximumSpeechRate
-      )
+      utterance.rate = AppDelegate.mapIosSpeechRate(rateFactor)
 
       self.activeUtterance = utterance
       self.activeUtteranceId = utteranceId
@@ -363,6 +487,14 @@ extension AppDelegate: AVSpeechSynthesizerDelegate {
   }
 
   override func applicationWillTerminate(_ application: UIApplication) {
+    if audioInterruptionObserverRegistered {
+      NotificationCenter.default.removeObserver(
+        self,
+        name: AVAudioSession.interruptionNotification,
+        object: AVAudioSession.sharedInstance()
+      )
+      audioInterruptionObserverRegistered = false
+    }
     activeUtterance = nil
     activeUtteranceId = nil
     if speechSynthesizer.isSpeaking || speechSynthesizer.isPaused {
@@ -445,7 +577,11 @@ extension AppDelegate: AVSpeechSynthesizerDelegate {
         result(FlutterError(code: "PICKER_BUSY", message: "已有文件选择请求正在进行", details: nil))
         return
       }
-      guard let presenter = self.topViewController() else {
+      guard
+        let presenter = self.topViewController(),
+        !presenter.isBeingDismissed,
+        presenter.presentedViewController == nil
+      else {
         result(FlutterError(code: "NO_VIEW_CONTROLLER", message: "未找到可用界面上下文", details: nil))
         return
       }
@@ -493,7 +629,11 @@ extension AppDelegate: AVSpeechSynthesizerDelegate {
         result(FlutterError(code: "PICKER_BUSY", message: "已有文件选择请求正在进行", details: nil))
         return
       }
-      guard let presenter = self.topViewController() else {
+      guard
+        let presenter = self.topViewController(),
+        !presenter.isBeingDismissed,
+        presenter.presentedViewController == nil
+      else {
         result(FlutterError(code: "NO_VIEW_CONTROLLER", message: "未找到可用界面上下文", details: nil))
         return
       }
@@ -551,8 +691,7 @@ extension AppDelegate: AVSpeechSynthesizerDelegate {
         }
         var data = Data()
         while true {
-          let chunk = handle.readData(ofLength: 64 * 1024)
-          if chunk.isEmpty {
+          guard let chunk = try handle.read(upToCount: 64 * 1024), !chunk.isEmpty else {
             break
           }
           if data.count + chunk.count > AppDelegate.maxTextFileBytes {

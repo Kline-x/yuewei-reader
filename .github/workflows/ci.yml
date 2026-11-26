@@ -82,6 +82,33 @@ jobs:
       - name: 获取依赖
         run: flutter pub get
 
+      - name: 配置 Android Release 签名（可选）
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -n "${ANDROID_KEYSTORE_BASE64}" ] && \
+             [ -n "${ANDROID_KEYSTORE_PASSWORD}" ] && \
+             [ -n "${ANDROID_KEY_ALIAS}" ] && \
+             [ -n "${ANDROID_KEY_PASSWORD}" ]; then
+            echo "检测到完整正式签名 Secrets，正在解码临时 Keystore..."
+            keystore_path="${RUNNER_TEMP}/yuewei-release.jks"
+            printf '%s' "${ANDROID_KEYSTORE_BASE64}" | base64 --decode > "${keystore_path}"
+            {
+              printf 'storeFile=%s\n' "${keystore_path}"
+              printf 'storePassword=%s\n' "${ANDROID_KEYSTORE_PASSWORD}"
+              printf 'keyAlias=%s\n' "${ANDROID_KEY_ALIAS}"
+              printf 'keyPassword=%s\n' "${ANDROID_KEY_PASSWORD}"
+            } > android/key.properties
+            echo "正式 Release 签名配置已就绪"
+          else
+            echo "未配置完整签名 Secrets，平滑回落 Debug 签名构建"
+          fi
+
       - name: 构建 arm64 Release APK
         run: flutter build apk --release --target-platform android-arm64
 
@@ -100,6 +127,12 @@ jobs:
           path: |
             build/app/outputs/flutter-apk/app-release.apk
             build/app/outputs/flutter-apk/app-release.apk.sha256
+
+      - name: 清理临时签名密钥文件
+        if: always()
+        shell: bash
+        run: |
+          rm -f android/key.properties "${RUNNER_TEMP}/yuewei-release.jks"
 
   verify_ios:
     name: iOS 语法检查与无签名构建验证

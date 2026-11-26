@@ -43,22 +43,87 @@ void main() {
         'ttsIsAvailable',
         'exportTextFile',
         'pickAndReadTextFile',
+        'installApk',
+        'openExternalUrl',
       ]) {
         expect(ktText, contains(method), reason: 'Android 缺少宿主方法 $method');
         expect(swiftText, contains(method), reason: 'iOS 缺少宿主方法 $method');
       }
     });
 
-    test('双端品牌名、图标集及裁切红线配置严格完整且无历史残留', () {
+    test('双端品牌名、图标集、在线更新与原生加固配置严格完整且无历史残留', () {
       final manifest =
           File('android/app/src/main/AndroidManifest.xml').readAsStringSync();
+      final filePathsXml =
+          File('android/app/src/main/res/xml/file_paths.xml');
+      final updateHelperKt = File(
+        'android/app/src/main/kotlin/com/kline/yuewei_reader/NativeAppUpdateHelper.kt',
+      );
+      final ttsHelperKt = File(
+        'android/app/src/main/kotlin/com/kline/yuewei_reader/NativeTtsAndBackupHelper.kt',
+      ).readAsStringSync();
+      final swiftText =
+          File('ios/Runner/AppDelegate.swift').readAsStringSync();
       final plist = File('ios/Runner/Info.plist').readAsStringSync();
       final buildGradle =
           File('android/app/build.gradle.kts').readAsStringSync();
 
       expect(buildGradle, contains('applicationId = "com.kline.yuewei"'));
+      expect(buildGradle, contains('key.properties'));
+      expect(buildGradle, contains('YUEWEI_KEYSTORE_PATH'));
+      expect(buildGradle, contains('create("release")'));
+
       expect(manifest, contains('android:label="阅微"'));
+      expect(
+        manifest,
+        contains('android.permission.REQUEST_INSTALL_PACKAGES'),
+        reason: 'Android Manifest 缺少应用内安装 APK 权限声明',
+      );
+      expect(
+        manifest,
+        contains('androidx.core.content.FileProvider'),
+        reason: 'Android Manifest 缺少 FileProvider 声明',
+      );
+      expect(
+        manifest,
+        contains(r'${applicationId}.fileprovider'),
+        reason: 'Android FileProvider authorities 必须使用 applicationId.fileprovider',
+      );
+      expect(filePathsXml.existsSync(), isTrue);
+      expect(filePathsXml.readAsStringSync(), contains('yuewei_updates/'));
+
+      expect(updateHelperKt.existsSync(), isTrue);
+      final updateKtText = updateHelperKt.readAsStringSync();
+      expect(updateKtText, contains('SHA-256'));
+      expect(updateKtText, contains('ACTION_MANAGE_UNKNOWN_APP_SOURCES'));
+      expect(updateKtText, contains('NEED_INSTALL_PERMISSION'));
+      expect(updateKtText, contains('HASH_MISMATCH'));
+      expect(updateKtText, contains('STARTED'));
+
+      expect(ttsHelperKt, contains('isHighSurrogate'));
+      expect(ttsHelperKt, contains('override fun onStop'));
+      expect(ttsHelperKt, contains('AUDIOFOCUS_LOSS'));
+
       expect(plist, contains('<string>阅微</string>'));
+      expect(
+        plist,
+        contains('<key>UIBackgroundModes</key>'),
+        reason: 'iOS Info.plist 缺少后台音频能力声明',
+      );
+      expect(
+        plist,
+        contains('<string>audio</string>'),
+        reason: 'iOS Info.plist 缺少 UIBackgroundModes audio 项',
+      );
+      expect(
+        swiftText.contains('readData(ofLength:'),
+        isFalse,
+        reason: 'iOS AppDelegate 严禁继续使用废弃的 readData(ofLength:)',
+      );
+      expect(swiftText, contains('read(upToCount:'));
+      expect(swiftText, contains('interruptionNotification'));
+      expect(swiftText, contains('isBeingDismissed'));
+      expect(swiftText, contains('UNSUPPORTED'));
       expect(
         plist,
         contains('NSLocalNetworkUsageDescription'),
