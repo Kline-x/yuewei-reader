@@ -1,4 +1,4 @@
-/// 局域网 Wi-Fi 传书响应式网页模板（Modern Soft UI 风格，纯内联零外链依赖）
+/// 局域网 Wi-Fi 传书响应式网页模板（配对码鉴权 + 串行队列防 OOM + 纯内联零外链依赖）
 const String kWifiTransferHtml = r'''<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -60,9 +60,23 @@ const String kWifiTransferHtml = r'''<!DOCTYPE html>
     padding: 5px 12px; border-radius: 999px; background: var(--accent-soft);
     color: var(--accent); font-size: 12px; font-weight: 600;
   }
+  .token-box {
+    margin-top: 14px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 16px; padding: 10px 14px;
+  }
+  .token-label { font-size: 12px; font-weight: 600; color: var(--sub); }
+  .token-input {
+    width: 112px; padding: 7px 12px; border-radius: 12px;
+    border: 1px solid var(--border); background: var(--card); color: var(--text);
+    font-size: 16px; font-weight: 700; letter-spacing: 4px; text-align: center;
+    outline: none;
+  }
+  .token-input:focus { border-color: var(--accent); }
+  .token-tip { font-size: 12px; color: var(--sub); }
   .dropzone {
-    margin-top: 18px; border: 2px dashed var(--accent); border-radius: 20px;
-    background: var(--accent-soft); padding: 34px 18px; text-align: center;
+    margin-top: 16px; border: 2px dashed var(--accent); border-radius: 20px;
+    background: var(--accent-soft); padding: 32px 18px; text-align: center;
     cursor: pointer; transition: transform .16s ease, background .16s ease;
   }
   .dropzone.active { transform: scale(0.99); background: rgba(31, 94, 80, 0.18); }
@@ -93,8 +107,13 @@ const String kWifiTransferHtml = r'''<!DOCTYPE html>
   <section class="card">
     <div class="eyebrow">YUEWEI WIFI TRANSFER</div>
     <h1>阅微 · 局域网无线传书</h1>
-    <p class="subtitle">保持手机与电脑处于同一 Wi-Fi，拖拽或选择文件即可直接入库书架或导入书源。</p>
+    <p class="subtitle">保持手机与电脑处于同一 Wi-Fi，多文件将按队列依次安全上传入库。</p>
     <div class="status-pill" id="statusPill">正在检测服务连接…</div>
+    <div class="token-box">
+      <label class="token-label" for="tokenInput">安全配对码</label>
+      <input class="token-input" id="tokenInput" type="text" inputmode="numeric" maxlength="4" placeholder="4位数字" />
+      <span class="token-tip" id="tokenTip">打开手机端一键链接将自动填充</span>
+    </div>
     <div class="dropzone" id="dropzone">
       <div class="drop-title">拖拽书籍或书源到此处，或点击浏览文件</div>
       <div class="drop-hint">支持 .txt / .epub 电子书，以及 .json（Legado 书源规则），单文件上限 120MB</div>
@@ -114,6 +133,17 @@ const String kWifiTransferHtml = r'''<!DOCTYPE html>
   const pickBtn = document.getElementById('pickBtn');
   const listEl = document.getElementById('list');
   const statusPill = document.getElementById('statusPill');
+  const tokenInput = document.getElementById('tokenInput');
+  const tokenTip = document.getElementById('tokenTip');
+
+  const urlToken = (new URLSearchParams(window.location.search).get('token') || '').trim();
+  if (urlToken) {
+    tokenInput.value = urlToken;
+    tokenTip.textContent = '已从访问链接自动识别配对码';
+  }
+
+  const uploadQueue = [];
+  let isProcessingQueue = false;
 
   async function refreshStatus() {
     try {
@@ -143,56 +173,93 @@ const String kWifiTransferHtml = r'''<!DOCTYPE html>
   function enqueueFiles(files) {
     const empty = listEl.querySelector('.empty');
     if (empty) empty.remove();
-    Array.from(files).forEach(uploadOne);
+    Array.from(files).forEach((file) => {
+      const item = document.createElement('div');
+      item.className = 'item';
+      item.innerHTML =
+        '<div class="item-row">' +
+        '<span class="item-name"></span>' +
+        '<span class="badge wait">排队等待中…</span>' +
+        '</div>' +
+        '<div class="bar-bg"><div class="bar-fg"></div></div>';
+      item.querySelector('.item-name').textContent = file.name;
+      listEl.prepend(item);
+      uploadQueue.push({
+        file,
+        badge: item.querySelector('.badge'),
+        bar: item.querySelector('.bar-fg'),
+      });
+    });
+    processQueue();
   }
 
-  function uploadOne(file) {
-    const item = document.createElement('div');
-    item.className = 'item';
-    item.innerHTML =
-      '<div class="item-row">' +
-      '<span class="item-name"></span>' +
-      '<span class="badge wait">准备上传…</span>' +
-      '</div>' +
-      '<div class="bar-bg"><div class="bar-fg"></div></div>';
-    item.querySelector('.item-name').textContent = file.name;
-    const badge = item.querySelector('.badge');
-    const bar = item.querySelector('.bar-fg');
-    listEl.prepend(item);
+  async function processQueue() {
+    if (isProcessingQueue) return;
+    isProcessingQueue = true;
+    try {
+      while (uploadQueue.length > 0) {
+        const task = uploadQueue.shift();
+        await uploadOne(task);
+      }
+    } finally {
+      isProcessingQueue = false;
+    }
+  }
 
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/api/upload?name=' + encodeURIComponent(file.name), true);
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable && e.total > 0) {
-        const pct = Math.round((e.loaded / e.total) * 100);
-        bar.style.width = pct + '%';
-        badge.textContent = pct < 100 ? ('上传中 ' + pct + '%') : '正在解析入库…';
-      }
-    };
-    xhr.onload = () => {
-      bar.style.width = '100%';
-      try {
-        const resp = JSON.parse(xhr.responseText || '{}');
-        if (xhr.status >= 200 && xhr.status < 300 && resp.ok) {
-          badge.className = 'badge ok';
-          badge.textContent = resp.kind === 'source'
-            ? ('导入 ' + resp.count + ' 条书源')
-            : ('已入架《' + resp.title + '》· ' + resp.chapters + ' 章');
-          refreshStatus();
-        } else {
-          badge.className = 'badge err';
-          badge.textContent = resp.error || ('失败 HTTP ' + xhr.status);
-        }
-      } catch (_) {
+  function uploadOne(task) {
+    return new Promise((resolve) => {
+      const { file, badge, bar } = task;
+      const token = (tokenInput.value || '').trim();
+      if (!token) {
         badge.className = 'badge err';
-        badge.textContent = '响应解析失败';
+        badge.textContent = '请先输入手机端 4 位配对码';
+        tokenInput.focus();
+        resolve();
+        return;
       }
-    };
-    xhr.onerror = () => {
-      badge.className = 'badge err';
-      badge.textContent = '网络传输中断';
-    };
-    xhr.send(file);
+
+      badge.className = 'badge wait';
+      badge.textContent = '准备上传…';
+
+      const xhr = new XMLHttpRequest();
+      const url = '/api/upload?name=' + encodeURIComponent(file.name) +
+        '&token=' + encodeURIComponent(token);
+      xhr.open('POST', url, true);
+      xhr.setRequestHeader('X-Access-Token', token);
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && e.total > 0) {
+          const pct = Math.round((e.loaded / e.total) * 100);
+          bar.style.width = pct + '%';
+          badge.textContent = pct < 100 ? ('上传中 ' + pct + '%') : '正在解析入库…';
+        }
+      };
+      xhr.onload = () => {
+        bar.style.width = '100%';
+        try {
+          const resp = JSON.parse(xhr.responseText || '{}');
+          if (xhr.status >= 200 && xhr.status < 300 && resp.ok) {
+            badge.className = 'badge ok';
+            badge.textContent = resp.kind === 'source'
+              ? ('导入 ' + resp.count + ' 条书源')
+              : ('已入架《' + resp.title + '》· ' + resp.chapters + ' 章');
+            refreshStatus();
+          } else {
+            badge.className = 'badge err';
+            badge.textContent = resp.error || ('失败 HTTP ' + xhr.status);
+          }
+        } catch (_) {
+          badge.className = 'badge err';
+          badge.textContent = '响应解析失败';
+        }
+        resolve();
+      };
+      xhr.onerror = () => {
+        badge.className = 'badge err';
+        badge.textContent = '网络传输中断';
+        resolve();
+      };
+      xhr.send(file);
+    });
   }
 })();
 </script>

@@ -1,18 +1,20 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 
-/// 规则提取器字段（支持 CSS / XPath / JSONPath + 后置正则洗净）
+/// 规则提取器字段（支持 CSS / XPath / JSONPath + 后置正则洗净/替换）
 @immutable
 class RuleField {
   const RuleField({
     this.selector = '',
     this.attr = '',
     this.regex = '',
+    this.replacement = '',
   });
 
   final String selector;
   final String attr;
   final String regex;
+  final String replacement;
 
   bool get isEmpty => selector.trim().isEmpty && attr.trim().isEmpty;
 
@@ -22,6 +24,7 @@ class RuleField {
       selector: (json['selector'] as String?) ?? '',
       attr: (json['attr'] as String?) ?? '',
       regex: (json['regex'] as String?) ?? '',
+      replacement: (json['replacement'] as String?) ?? '',
     );
   }
 
@@ -29,6 +32,7 @@ class RuleField {
         'selector': selector,
         'attr': attr,
         'regex': regex,
+        if (replacement.isNotEmpty) 'replacement': replacement,
       };
 }
 
@@ -248,6 +252,25 @@ class BookSourceRule {
           (json['toc'] as Map<String, dynamic>?) ?? const {}),
       chapter: ChapterRuleSpec.fromJson(
           (json['chapter'] as Map<String, dynamic>?) ?? const {}),
+    );
+  }
+
+  BookSourceRule copyWith({
+    bool? enabled,
+    bool? isBuiltin,
+  }) {
+    return BookSourceRule(
+      id: id,
+      name: name,
+      baseUrl: baseUrl,
+      groupName: groupName,
+      charset: charset,
+      enabled: enabled ?? this.enabled,
+      isBuiltin: isBuiltin ?? this.isBuiltin,
+      search: search,
+      detail: detail,
+      toc: toc,
+      chapter: chapter,
     );
   }
 

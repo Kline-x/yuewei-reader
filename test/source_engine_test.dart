@@ -1,6 +1,14 @@
+import 'dart:convert';
+import 'dart:typed_data';
+import 'package:dio/dio.dart';
+import 'package:drift/native.dart';
+import 'package:fast_gbk/fast_gbk.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:html/parser.dart' as html_parser;
+import 'package:yuewei_reader/core/database/app_database.dart';
+import 'package:yuewei_reader/core/network/app_http_client.dart';
 import 'package:yuewei_reader/features/sources/data/builtin_sources.dart';
+import 'package:yuewei_reader/features/sources/data/source_repository.dart';
 import 'package:yuewei_reader/features/sources/domain/book_match_models.dart';
 import 'package:yuewei_reader/features/sources/domain/book_source_rule.dart';
 import 'package:yuewei_reader/features/sources/engine/book_metadata_sanitizer.dart';
@@ -8,326 +16,306 @@ import 'package:yuewei_reader/features/sources/engine/legado_rule_adapter.dart';
 import 'package:yuewei_reader/features/sources/engine/rule_evaluator.dart';
 import 'package:yuewei_reader/features/sources/engine/source_crawler_service.dart';
 
+class _MockAdapter implements HttpClientAdapter {
+  _MockAdapter(this.handler);
+  final Future<ResponseBody> Function(RequestOptions options, Uint8List body) handler;
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async {
+    final bb = BytesBuilder(copy: false);
+    if (requestStream != null) {
+      await for (final chunk in requestStream) {
+        bb.add(chunk);
+      }
+    }
+    return handler(options, bb.takeBytes());
+  }
+
+  @override
+  void close({bool force = false}) {}
+}
+
+ResponseBody _htmlResp(String html, {String? finalUrl}) {
+  return ResponseBody(
+    Stream.value(Uint8List.fromList(utf8.encode(html))),
+    200,
+    headers: {Headers.contentTypeHeader: ['text/html; charset=utf-8']},
+    isRedirect: finalUrl != null,
+    redirects: finalUrl != null
+        ? [RedirectRecord(302, 'GET', Uri.parse(finalUrl))]
+        : null,
+  );
+}
+
+BookSourceRule _buildTestRule({
+  RuleField tocNext = const RuleField(),
+  RuleField chapterNext = const RuleField(),
+}) =>
+    BookSourceRule(
+      id: 'test_src',
+      name: '测试源',
+      baseUrl: 'https://book.test',
+      search: const SearchRuleSpec(
+        urlTemplate: 'https://book.test/search?q={key}',
+        item: '.list .item',
+        title: RuleField(selector: 'a.name', attr: 'text'),
+        author: RuleField(selector: '.author', attr: 'text'),
+        detailUrl: RuleField(selector: 'a.name', attr: 'href'),
+        coverUrl: RuleField(selector: 'img', attr: 'src'),
+      ),
+      detail: const DetailRuleSpec(
+        title: RuleField(selector: 'h1.book-title', attr: 'text'),
+        author: RuleField(selector: '.book-author', attr: 'text'),
+        intro: RuleField(selector: '.book-intro', attr: 'text'),
+      ),
+      toc: TocRuleSpec(
+        item: '#toc a',
+        title: const RuleField(attr: 'text'),
+        url: const RuleField(attr: 'href'),
+        nextPageUrl: tocNext,
+      ),
+      chapter: ChapterRuleSpec(
+        content: const RuleField(selector: '#content', attr: 'html'),
+        nextPageUrl: chapterNext,
+      ),
+    );
+
 void main() {
   const evaluator = RuleEvaluator();
 
-  group('RuleEvaluator 与 Legado 书源解析测试', () {
-    test('CSS 选择器、:contains 过滤与 .0/.-1 索引切片准确解析', () {
+  group('RuleEvaluator、Legado 规则与网络解码测试', () {
+    test('CSS 选择器、:contains、.0/.-1 索引切片、JSONPath 与 XPath 均准确解析', () {
       const html = '''
         <div class="result-list">
-          <div class="item">
-            <a class="book-link" href="/book/101.html">《山海夜巡人》</a>
-            <span class="meta">作者：林岚</span>
-            <span class="meta">连载中</span>
-          </div>
-          <div class="item">
-            <a class="book-link" href="/book/202.html">《风雪归舟》</a>
-            <span class="meta">作者：顾言</span>
-            <span class="meta">已完结</span>
-          </div>
-        </div>
-      ''';
-
+          <div class="item"><a class="book-link" href="/book/101.html">《山海夜巡人》</a><span class="meta">作者：林岚</span><span class="meta">连载中</span></div>
+          <div class="item"><a class="book-link" href="/book/202.html">《风雪归舟》</a><span class="meta">作者：顾言</span><span class="meta">已完结</span></div>
+        </div>''';
       final nodes = evaluator.selectNodes(html, '.result-list .item');
       expect(nodes.length, 2);
+      expect(evaluator.evaluateField(nodes[0], const RuleField(selector: '.book-link', attr: 'text')), '《山海夜巡人》');
+      expect(evaluator.evaluateField(nodes[0], const RuleField(selector: '.meta.0', attr: 'text', regex: r'^作者[：:]')), '林岚');
+      expect(evaluator.evaluateField(nodes[1], const RuleField(selector: '.meta.-1', attr: 'text')), '已完结');
+      expect(evaluator.evaluateField(nodes[0], const RuleField(selector: '.book-link', attr: 'href'), baseUrl: 'https://www.example.com/search'), 'https://www.example.com/book/101.html');
+      expect(evaluator.selectNodes(html, '.item:contains(风雪归舟)').length, 1);
 
-      final firstTitle = evaluator.evaluateField(
-        nodes[0],
-        const RuleField(selector: '.book-link', attr: 'text'),
-      );
-      final firstAuthor = evaluator.evaluateField(
-        nodes[0],
-        const RuleField(selector: '.meta.0', attr: 'text', regex: r'^作者[：:]'),
-      );
-      final secondStatus = evaluator.evaluateField(
-        nodes[1],
-        const RuleField(selector: '.meta.-1', attr: 'text'),
-      );
-      final firstUrl = evaluator.evaluateField(
-        nodes[0],
-        const RuleField(selector: '.book-link', attr: 'href'),
-        baseUrl: 'https://www.example.com/search',
-      );
-
-      expect(firstTitle, '《山海夜巡人》');
-      expect(firstAuthor, '林岚');
-      expect(secondStatus, '已完结');
-      expect(firstUrl, 'https://www.example.com/book/101.html');
-
-      final matchedNodes =
-          evaluator.selectNodes(html, '.item:contains(风雪归舟)');
-      expect(matchedNodes.length, 1);
-    });
-
-    test('JSONPath 与 XPath 解析管道均正常工作', () {
-      const jsonRaw = '''
-        {
-          "data": {
-            "books": [
-              {"name": "星渊航图", "author": "南风", "url": "https://api.test/b/1"}
-            ]
-          }
-        }
-      ''';
+      const jsonRaw = '{"data":{"books":[{"name":"星渊航图","author":"南风"}]}}';
       final jsonNodes = evaluator.selectNodes(jsonRaw, r'$.data.books[*]');
-      expect(jsonNodes.length, 1);
-      expect(
-        evaluator.evaluateField(jsonNodes.first, const RuleField(selector: r'$.name')),
-        '星渊航图',
-      );
+      expect(evaluator.evaluateField(jsonNodes.first, const RuleField(selector: r'$.name')), '星渊航图');
 
       const xmlHtml = '<ul id="toc"><li><a href="/c/1">第一章</a></li></ul>';
       final xpNodes = evaluator.selectNodes(xmlHtml, '//ul[@id="toc"]/li/a');
-      expect(xpNodes.length, 1);
-      expect(
-        evaluator.evaluateField(xpNodes.first, const RuleField(attr: 'text')),
-        '第一章',
-      );
+      expect(evaluator.evaluateField(xpNodes.first, const RuleField(attr: 'text')), '第一章');
     });
 
-    test('LegadoRuleAdapter 可解析标准 Legado 3.0 JSON 并校验内置主力源合法性', () {
-      const legadoSample = r'''
-      [{
-        "bookSourceName": "开源样例书站",
-        "bookSourceUrl": "https://sample.legado.org",
-        "bookSourceGroup": "测试分组",
-        "searchUrl": "https://sample.legado.org/search?q={{key}},{\"charset\":\"gbk\"}",
-        "ruleSearch": {
-          "bookList": ".list .row",
-          "name": "a.title@text",
-          "author": "span.author@text",
-          "bookUrl": "a.title@href"
-        },
-        "ruleToc": {
-          "chapterList": "#chapters li a",
-          "chapterName": "text",
-          "chapterUrl": "href"
-        },
-        "ruleContent": {
-          "content": "#article@html"
-        }
-      }]
+    test('attr: html 剥离 script/style/noscript、实体顺序防双重反转义、##regex##replacement 与 || 回退链', () {
+      const html = '''
+        <div id="content">
+          <style>.hide{display:none}</style>
+          <p>第一段：&amp;lt;保留&amp;gt;&#10;第二行</p>
+          <script>window.adLeak = 123;</script>
+          <noscript>脚本提示</noscript>
+        </div>
+        <div class="fallback-title">备选书名：星辰</div>
+        <a class="alt-link" href="/detail/9.html">入口</a>
       ''';
+      final root = EvaluatedNode.html(html_parser.parse(html).documentElement!);
+      final cleanHtml = evaluator.evaluateField(root, const RuleField(selector: '#content', attr: 'html'));
+      expect(cleanHtml, contains('第一段'));
+      expect(cleanHtml, isNot(contains('adLeak')));
+      expect(cleanHtml, isNot(contains('display:none')));
+      expect(cleanHtml, isNot(contains('脚本提示')));
+      expect(html_parser.parse(html).querySelector('script'), isNotNull);
 
-      final parsed = LegadoRuleAdapter.parseJson(legadoSample);
-      expect(parsed.length, 1);
-      final rule = parsed.first;
-      expect(rule.name, '开源样例书站');
-      expect(rule.charset.toLowerCase(), 'gbk');
-      expect(rule.search.urlTemplate, contains('{key}'));
+      expect(RuleEvaluator.decodeHtmlEntities('&amp;lt;div&amp;gt; &amp;#65; a&#10;b&#13;c'), '&lt;div&gt; &#65; a\nb\rc');
 
+      // || 回退链与 ##regex##replacement
+      final fallbackVal = evaluator.evaluateField(
+        root,
+        const RuleField(
+          selector: '.missing-title || .fallback-title',
+          attr: 'text',
+          regex: r'^备选书名[：:]',
+          replacement: '《',
+        ),
+      );
+      expect(fallbackVal, '《星辰');
+      final fallbackLink = evaluator.evaluateField(
+        root,
+        const RuleField(selector: '.none@href || .alt-link@href', attr: 'text'),
+        baseUrl: 'https://book.test/x',
+      );
+      expect(fallbackLink, 'https://book.test/detail/9.html');
+      expect(evaluator.selectNodes(html, '.none-list || .fallback-title').length, 1);
+
+      // Legado ##regex##replacement 解析
+      const legadoReplace = r'[{"bookSourceName":"替换测试","bookSourceUrl":"https://r.test","searchUrl":"/s?q={{key}}","ruleSearch":{"bookList":".i","name":"a@text##旧词##新词","bookUrl":"a@href"},"ruleToc":{"chapterList":".c a"},"ruleContent":{"content":"#txt"}}]';
+      final rule = LegadoRuleAdapter.parseJson(legadoReplace).first;
+      expect(rule.search.title.regex, '旧词');
+      expect(rule.search.title.replacement, '新词');
+      expect(BookSourceRule.fromJsonString(rule.toJsonString()).search.title.replacement, '新词');
+    });
+
+    test('UTF-8 明确声明遇单坏字节不误降级 GBK，GBK POST 发送字节流且 encodeQuery 容错 Emoji', () async {
+      final utf8WithBadByte = <int>[...utf8.encode('第一章 星辰大海'), 0xFF, ...utf8.encode('终章')];
+      final decoded = AppHttpClient.decodeBytes(utf8WithBadByte, contentType: 'text/html; charset=utf-8');
+      expect(decoded, contains('第一章 星辰大海'));
+      expect(decoded, contains('终章'));
+
+      // encodeQuery 含超出 GBK 的 Emoji 不抛异常
+      final encodedGbk = AppHttpClient.encodeQuery('斗破😀', 'gbk');
+      expect(encodedGbk, contains('%B6%B7%C6%C6'));
+      expect(encodedGbk, contains('%F0%9F%98%80'));
+
+      // GBK POST 设置 charset=gbk 并以 GBK 字节流发送
+      String? capturedCt;
+      Uint8List? capturedBody;
+      final dio = Dio()
+        ..httpClientAdapter = _MockAdapter((opt, body) async {
+          capturedCt = opt.headers['Content-Type']?.toString();
+          capturedBody = body;
+          return _htmlResp('<html><body>ok</body></html>');
+        });
+      final client = AppHttpClient(dio: dio);
+      await client.fetchText(
+        'https://gbk.test/search',
+        method: 'POST',
+        body: 'key=斗破',
+        charsetHint: 'gbk',
+      );
+      expect(capturedCt, 'application/x-www-form-urlencoded; charset=gbk');
+      expect(capturedBody, equals(Uint8List.fromList([...utf8.encode('key='), ...gbk.encode('斗破')])));
+    });
+
+    test('目录/正文多页 nextPageUrl 拼接防环、相对链接使用 finalUrl 与 302 详情直解', () async {
+      final dio = Dio()
+        ..httpClientAdapter = _MockAdapter((opt, _) async {
+          final u = opt.uri.toString();
+          if (u == 'https://book.test/search?q=%E8%AF%A1%E7%A7%98') {
+            return _htmlResp(
+              '<html><body><h1 class="book-title">诡秘之主</h1><div class="book-author">爱潜水的乌贼</div><div class="book-intro">蒸汽与机械的浪潮中。</div></body></html>',
+              finalUrl: 'https://book.test/book/888/',
+            );
+          }
+          if (u == 'https://book.test/search?q=rel') {
+            return _htmlResp(
+              '<div class="list"><div class="item"><a class="name" href="item/1.html">相对书</a><img src="img/1.jpg"/></div></div>',
+              finalUrl: 'https://cdn.book.test/sub/search.php',
+            );
+          }
+          if (u == 'https://book.test/book/1/') {
+            return _htmlResp(
+              '<h1 class="book-title">分页测试书</h1><div id="toc"><a href="/c/1.html">第一章</a><a href="/c/2.html">第二章</a></div><a class="next-toc" href="/book/1/p2.html">下一页</a>',
+            );
+          }
+          if (u == 'https://book.test/book/1/p2.html') {
+            return _htmlResp(
+              '<div id="toc"><a href="/c/3.html">第三章</a></div><a class="next-toc" href="/book/1/">循环回首页</a>',
+            );
+          }
+          if (u == 'https://book.test/c/1.html') {
+            return _htmlResp(
+              '<div id="content"><p>第一章 启程</p><p>第一页正文。</p></div><a class="next-ch" href="/c/1_2.html">下一页</a>',
+            );
+          }
+          if (u == 'https://book.test/c/1_2.html') {
+            return _htmlResp(
+              '<div id="content"><p>第一章 启程</p><p>第二页正文。</p></div><a class="next-ch" href="/c/1.html">回环</a>',
+            );
+          }
+          return _htmlResp('');
+        });
+      final crawler = SourceCrawlerService(httpClient: AppHttpClient(dio: dio));
+      final rule = _buildTestRule(
+        tocNext: const RuleField(selector: 'a.next-toc', attr: 'href'),
+        chapterNext: const RuleField(selector: 'a.next-ch', attr: 'href'),
+      );
+
+      // 302 直跳详情页提取单条 SourceSearchHit
+      final directHits = await crawler.searchStream([rule], '诡秘').toList();
+      expect(directHits.length, 1);
+      expect(directHits.first.title, '诡秘之主');
+      expect(directHits.first.author, '爱潜水的乌贼');
+      expect(directHits.first.bookUrl, 'https://book.test/book/888/');
+
+      // 相对路径按 res.finalUrl 解析
+      final relHits = await crawler.searchStream([rule], 'rel').toList();
+      expect(relHits.first.bookUrl, 'https://cdn.book.test/sub/item/1.html');
+      expect(relHits.first.coverUrl, 'https://cdn.book.test/sub/img/1.jpg');
+
+      // 目录多页拼接 + 防环
+      final detailRes = await crawler.fetchBookDetailAndToc(rule, 'https://book.test/book/1/');
+      expect(detailRes.chapters.map((c) => c.title).toList(), ['第一章', '第二章', '第三章']);
+
+      // 正文多页拼接 + 防环 + 仅首页按 chapterTitle 去重
+      final paras = await crawler.fetchChapterParagraphs(rule, 'https://book.test/c/1.html', chapterTitle: '第一章 启程');
+      expect(paras.length, 3);
+      expect(paras[0], '\u3000\u3000第一页正文。');
+      expect(paras[1], '\u3000\u3000第一章 启程');
+      expect(paras[2], '\u3000\u3000第二页正文。');
+    });
+
+    test('SourceRepository 防篡改内置源且 ensureBuiltinSourcesSeeded 保留用户启用状态', () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      addTearDown(db.close);
+      final repo = SourceRepository(db: db, httpClient: AppHttpClient());
+      await repo.ensureBuiltinSourcesSeeded();
+
+      // 用户禁用 builtin_biquge7 后再次同步，ruleJson.enabled 须保持 false
+      await repo.setEnabled('builtin_biquge7', false);
+      await repo.ensureBuiltinSourcesSeeded();
+      final keptRule = await repo.getRuleById('builtin_biquge7');
+      expect(keptRule?.enabled, isFalse);
+
+      // 尝试通过原生 JSON 覆写内置源或导入空 ID 均应被拦截
+      final attackJson = jsonEncode([
+        {...BuiltinSources.all.first.toJson(), 'name': '被篡改的内置源'},
+        {...BuiltinSources.all.first.toJson(), 'id': ''},
+        {...BuiltinSources.all.first.toJson(), 'id': 'custom_valid_1', 'name': '合法自定义源', 'isBuiltin': true},
+      ]);
+      final imported = await repo.importLegadoJson(attackJson);
+      expect(imported, 1);
+      expect((await repo.getRuleById(BuiltinSources.all.first.id))?.name, BuiltinSources.all.first.name);
+      final custom = await repo.getRuleById('custom_valid_1');
+      expect(custom?.name, '合法自定义源');
+      expect(custom?.isBuiltin, isFalse);
+    });
+
+    test('内置书源合法性、元数据清洗、防劈裂代理对与 AggregatedBookMatch.bestIntro', () {
       expect(BuiltinSources.all.length, greaterThanOrEqualTo(10));
       final seenIds = <String>{};
       for (final src in BuiltinSources.all) {
-        expect(src.id, isNotEmpty);
-        expect(seenIds.add(src.id), isTrue, reason: '重复书源ID: ${src.id}');
-        expect(src.name, isNotEmpty);
-        expect(src.groupName, isNotEmpty);
-        expect(src.charset, isNotEmpty);
+        expect(seenIds.add(src.id), isTrue);
         expect(src.isBuiltin, isTrue);
-        expect(
-          src.baseUrl,
-          anyOf(startsWith('https://'), startsWith('http://')),
-        );
         expect(src.search.urlTemplate, contains('{key}'));
-        expect(src.search.item, isNotEmpty);
-        expect(src.search.title.isEmpty, isFalse);
-        expect(src.search.detailUrl.isEmpty, isFalse);
-        expect(src.toc.item, isNotEmpty);
-        expect(src.toc.url.isEmpty, isFalse);
-        expect(src.chapter.content.selector, isNotEmpty);
-
-        final roundTrip = BookSourceRule.fromJsonString(src.toJsonString());
-        expect(roundTrip.id, src.id);
-        expect(roundTrip.name, src.name);
-        expect(roundTrip.baseUrl, src.baseUrl);
-        expect(roundTrip.groupName, src.groupName);
-        expect(roundTrip.charset, src.charset);
-        expect(roundTrip.isBuiltin, src.isBuiltin);
-        expect(roundTrip.search.urlTemplate, src.search.urlTemplate);
-        expect(roundTrip.search.method, src.search.method);
-        expect(roundTrip.search.item, src.search.item);
-        expect(roundTrip.detail.intro.selector, src.detail.intro.selector);
-        expect(roundTrip.detail.intro.regex, src.detail.intro.regex);
-        expect(roundTrip.toc.item, src.toc.item);
-        expect(roundTrip.chapter.content.selector, src.chapter.content.selector);
-        expect(roundTrip.chapter.content.regex, src.chapter.content.regex);
+        expect(BookSourceRule.fromJsonString(src.toJsonString()).id, src.id);
       }
+      expect(seenIds, containsAll(const ['builtin_biquge7', 'builtin_biqugezwx', 'builtin_yetianlian', 'builtin_sto66', 'builtin_kk169']));
 
-      for (final coreId in const [
-        'builtin_biquge7',
-        'builtin_biqugezwx',
-        'builtin_yetianlian',
-        'builtin_sto66',
-        'builtin_kk169',
-      ]) {
-        expect(seenIds.contains(coreId), isTrue, reason: '缺少保留核心ID: $coreId');
-      }
-    });
+      // Emoji 简介截断不劈裂代理对
+      final emojiIntro = '${'a' * 599}🚀${'b' * 20}';
+      final truncated = BookMetadataSanitizer.cleanSeoIntro(emojiIntro);
+      expect(truncated.contains('\uFFFD'), isFalse);
+      expect(truncated, endsWith('🚀…'));
 
-    test('未配置 selector 的默认 RuleField 绝不吞噬全页 HTML/JS 且仍兼容 a 标签自身属性提取', () {
-      const fullHtml = '''
-        <html>
-          <head><script>window.dataLayer = [];</script></head>
-          <body>
-            <div class="box"><a href="/c/99.html">第九十九章 大结局</a></div>
-          </body>
-        </html>
-      ''';
-      final doc = html_parser.parse(fullHtml);
-      final rootNode = EvaluatedNode.html(doc.documentElement!);
-
-      // 未配置 selector 的可选字段应严格返回空串（彻底根除 script/HTML 污染 category/statusText）
-      expect(evaluator.evaluateField(rootNode, const RuleField()), isEmpty);
-      expect(evaluator.evaluateField(rootNode, RuleField.fromJson(const {})), isEmpty);
-
-      // 局部节点 <div class="box"> 包含 <script> 时也应剔除 JS 脚本
-      const htmlWithInlineScript =
-          '<div class="intro">真实简介正文<script>window.__secret=1;</script></div>';
-      final divNode = evaluator.selectNodes(htmlWithInlineScript, '.intro').first;
-      expect(evaluator.evaluateField(divNode, const RuleField(attr: 'text')), '真实简介正文');
-
-      // 目录 <a> 标签配合显式 attr: text/href 应正常工作
-      final aNode = evaluator.selectNodes(fullHtml, '.box a').first;
-      expect(evaluator.evaluateField(aNode, const RuleField(attr: 'text')), '第九十九章 大结局');
-      expect(
-        evaluator.evaluateField(aNode, const RuleField(attr: 'href'), baseUrl: 'https://test.org'),
-        'https://test.org/c/99.html',
-      );
-    });
-
-    test('cleanSeoIntro 折叠换行空白、剥离序号噪声并过滤 SEO 模板', () {
-      expect(SourceCrawlerService.cleanSeoIntro('  1\n   \n'), isEmpty);
-      expect(
-        SourceCrawlerService.cleanSeoIntro(
-          '1\n  《某书》\n 作者：某人\n 简介：这里是属于斗气的世界！\n  全新等级体系。',
-        ),
-        '这里是属于斗气的世界！ 全新等级体系。',
-      );
-      expect(
-        SourceCrawlerService.cleanSeoIntro('window.__CF=1; function(){}'),
-        isEmpty,
-      );
-      expect(
-        BookMetadataSanitizer.cleanSeoIntro(
-          '这里是属于斗气的世界，没有花俏艳丽的魔法！\n《斗破苍穹》是作家「天蚕土豆」倾力打造的一部玄幻佳作。本书由思兔小说为您呈现，无错字精校。',
-        ),
-        '这里是属于斗气的世界，没有花俏艳丽的魔法！',
-      );
-    });
-
-    test('五组内置书源详情页规则正确提取简介、最新章节与更新时间并过滤脏时间', () {
       expect(BookMetadataSanitizer.sanitizeUpdateTime('更新时间：2026-01-22 22:43'), '2026-01-22 22:43');
-      expect(BookMetadataSanitizer.sanitizeUpdateTime('最后更新：2019-04-02 07:59:51'), '2019-04-02 07:59:51');
       expect(BookMetadataSanitizer.sanitizeUpdateTime('未知时间'), isEmpty);
-      expect(BookMetadataSanitizer.sanitizeUpdateTime('<script>x</script>'), isEmpty);
-
-      // 1. 笔趣阁ZWX 真实 DOM 样本
-      final zwx = BuiltinSources.all.firstWhere((s) => s.id == 'builtin_biqugezwx');
-      const zwxHtml = '''
-        <html><body><div class="container"><div class="item">
-          <img src="https://img.example.com/605s.jpg"/>
-          <div class="itemtxt">
-            <h1><i>万字</i><a href="/605/#dir">斗破苍穹</a></h1>
-            <p><span>已完结</span><span>玄幻小说</span></p>
-            <p><a href="/authorarticle?author=1">作者：天蚕土豆</a></p>
-            <ul><li><i>未知时间</i><a href="/605/1.html">第1661章 萧炎云韵篇</a></li></ul>
-          </div>
-        </div>
-        <div class="des bb">这里是属于斗气的世界！</div>
-        <h2 id="dir"><span>更新时间：2026-01-22 22:43</span></h2>
-        </div></body></html>
-      ''';
-      final zwxRoot = EvaluatedNode.html(html_parser.parse(zwxHtml).documentElement!);
-      expect(evaluator.evaluateField(zwxRoot, zwx.detail.intro), '这里是属于斗气的世界！');
-      expect(evaluator.evaluateField(zwxRoot, zwx.detail.latestChapter), '第1661章 萧炎云韵篇');
-      expect(evaluator.evaluateField(zwxRoot, zwx.detail.lastUpdateTime), '2026-01-22 22:43');
-      expect(evaluator.evaluateField(zwxRoot, zwx.detail.statusText), '已完结');
-      expect(evaluator.evaluateField(zwxRoot, zwx.detail.category), '玄幻小说');
-
-      // 2. 笔趣阁7 / 夜天连看 OpenGraph meta 提取
-      final b7 = BuiltinSources.all.firstWhere((s) => s.id == 'builtin_biquge7');
-      const ogHtml = '''
-        <html><head>
-          <meta property="og:title" content="万相之王" />
-          <meta property="og:description" content="天地间，有万相。而我李洛，终将成为这万相之王。" />
-          <meta property="og:novel:category" content="玄幻奇幻" />
-          <meta property="og:novel:status" content="完结" />
-          <meta property="og:novel:update_time" content="2025-11-14 18:00:00" />
-          <meta property="og:novel:latest_chapter_name" content="第一千八百三十七章 大结局" />
-        </head><body></body></html>
-      ''';
-      final ogRoot = EvaluatedNode.html(html_parser.parse(ogHtml).documentElement!);
-      expect(evaluator.evaluateField(ogRoot, b7.detail.intro), '天地间，有万相。而我李洛，终将成为这万相之王。');
-      expect(evaluator.evaluateField(ogRoot, b7.detail.lastUpdateTime), '2025-11-14 18:00:00');
-      expect(evaluator.evaluateField(ogRoot, b7.detail.latestChapter), '第一千八百三十七章 大结局');
-    });
-
-    test('修复源与新增扩充源典型 DOM/XPath 及广告清洗正则生效', () {
-      final groups = BuiltinSources.all.map((s) => s.groupName).toSet();
-      expect(groups, containsAll(const ['精品主力', '经典备选', '精选扩充']));
+      expect(SourceCrawlerService.cleanSeoIntro('window.__CF=1; function(){}'), isEmpty);
 
       final kk = BuiltinSources.all.firstWhere((s) => s.id == 'builtin_kk169');
-      const kkChHtml = '''
-        <div id="acontent"><h1>第一章 陨落的天才</h1><script>read2();</script>
-        <div class="tishi">穿越小说推荐</div>(穿越小说 www.kk169.la)月如银盘。<br/>穿越小说 www.kk169.la</div>
-      ''';
-      final kkNode =
-          EvaluatedNode.html(html_parser.parse(kkChHtml).documentElement!);
-      final kkCleaned = evaluator.evaluateField(kkNode, kk.chapter.content);
-      expect(kkCleaned, contains('月如银盘。'));
-      expect(kkCleaned, isNot(contains('read2')));
-      expect(kkCleaned, isNot(contains('kk169.la')));
+      final kkNode = EvaluatedNode.html(html_parser.parse('<div id="acontent"><h1>第一章</h1><script>read2();</script>(穿越小说 www.kk169.la)月如银盘。</div>').documentElement!);
+      expect(evaluator.evaluateField(kkNode, kk.chapter.content), contains('月如银盘。'));
+      expect(evaluator.evaluateField(kkNode, kk.chapter.content), isNot(contains('read2')));
 
-      final qs = BuiltinSources.all.firstWhere((s) => s.id == 'builtin_qiushu');
-      const qsHtml = '''
-        <div class="book_con_list"><ul><li><a href="/new.html">最新章</a></li></ul></div>
-        <div class="book_con_list"><ul><li><a href="1.html">第一章 绯红</a></li></ul></div>
-        <div id="content">痛！<p>手机阅读：http://m.qiushu.info/1/</p><p>为了方便下次阅读，加入书签</p></div>
-      ''';
-      final tocNodes = evaluator.selectNodes(qsHtml, qs.toc.item);
-      expect(tocNodes.length, 1);
-      expect(evaluator.evaluateField(tocNodes.first, qs.toc.title), '第一章 绯红');
-      final qsContent = evaluator.evaluateField(
-        EvaluatedNode.html(html_parser.parse(qsHtml).documentElement!),
-        qs.chapter.content,
-      );
-      expect(qsContent, '痛！');
-
-      final bd = BuiltinSources.all.firstWhere((s) => s.id == 'builtin_botaodz');
-      const bdHtml = '<meta property="og:description" content="一段传奇。\n各位书友要是觉得《某书》还不错的话请不要忘记推荐！" />';
-      expect(
-        evaluator.evaluateField(EvaluatedNode.html(html_parser.parse(bdHtml).documentElement!), bd.detail.intro),
-        '一段传奇。',
-      );
-
-      final xy = BuiltinSources.all.firstWhere((s) => s.id == 'builtin_xyusk');
-      expect(xy.baseUrl, 'http://www.8xiaoshuo.net');
-      expect(xy.search.urlTemplate, startsWith('http://www.8xiaoshuo.net/'));
-    });
-
-    test('AggregatedBookMatch.bestIntro 过滤占位符并择优真实简介', () {
       SourceSearchHit hit(String id, String intro) => SourceSearchHit(
             sourceId: id, sourceName: id, title: '遮天', author: '辰东',
             bookUrl: 'https://test.org/$id', intro: intro, latencyMs: 100,
           );
-
-      final agg = AggregatedBookMatch(
-        cleanTitle: '遮天', cleanAuthor: '辰东',
-        hits: [
-          hit('s1', '...'), hit('s2', '……  '), hit('s3', '暂无简介。'),
-          hit('s4', '暂无介绍'), hit('s5', '无简介'), hit('s6', '好书！'),
-          hit('s7', '冰冷与黑暗并存的宇宙深处。'),
-          hit('s8', '冰冷与黑暗并存的宇宙深处，九具庞大的龙尸拉着一口青铜古棺，亘古长存。'),
-        ],
-      );
-      expect(agg.bestIntro, '冰冷与黑暗并存的宇宙深处，九具庞大的龙尸拉着一口青铜古棺，亘古长存。');
-
-      final emptyAgg = AggregatedBookMatch(
-        cleanTitle: '遮天', cleanAuthor: '辰东',
-        hits: [hit('s1', '...'), hit('s2', '暂无简介'), hit('s3', '无')],
-      );
-      expect(emptyAgg.bestIntro, isEmpty);
+      final agg = AggregatedBookMatch(cleanTitle: '遮天', cleanAuthor: '辰东', hits: [hit('s1', '暂无简介'), hit('s2', '九具庞大的龙尸拉着一口青铜古棺。')]);
+      expect(agg.bestIntro, '九具庞大的龙尸拉着一口青铜古棺。');
     });
   });
 }

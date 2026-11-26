@@ -42,6 +42,47 @@ void main() {
       expect(paragraphs[1], contains('凌晨一点零五分'));
     });
 
+    test('彻底剥离跨行与大小写混合的 script / style / noscript 整块源码', () {
+      const rawHtml = '''
+        <STYLE type="text/css">
+          .ad-banner { display: none; color: #ff0000; }
+        </STYLE>
+        <p>夜幕低垂，旧港口亮起零星渔火。</p>
+        <SCRIPT language="javascript">
+          var adToken = "leak_js_code";
+          function injectPopup() { return true; }
+        </SCRIPT>
+        <noscript>请启用 JavaScript 查看广告</noscript>
+        <p>他合上手记，缓步走上石阶。</p>
+      ''';
+
+      final paragraphs = pipeline.processHtmlToParagraphs(rawHtml);
+
+      expect(paragraphs.length, 2);
+      expect(paragraphs[0], '\u3000\u3000夜幕低垂，旧港口亮起零星渔火。');
+      expect(paragraphs[1], '\u3000\u3000他合上手记，缓步走上石阶。');
+      final joined = paragraphs.join('\n');
+      expect(joined, isNot(contains('ad-banner')));
+      expect(joined, isNot(contains('leak_js_code')));
+      expect(joined, isNot(contains('injectPopup')));
+      expect(joined, isNot(contains('JavaScript')));
+    });
+
+    test('HTML 实体解码先解命名与数字实体再解 &amp;，并放行 &#10;/&#13; 换行实体', () {
+      const rawHtml =
+          '<p>转义符号：&amp;lt;tag&amp;gt; 与 &amp;#65;，以及 A &amp; B</p>'
+          '<p>第一行&#10;第二行&#13;&#10;第三行&#x0A;第四行 &ldquo;引语&rdquo;&mdash;&hellip;</p>';
+
+      final paragraphs = pipeline.processHtmlToParagraphs(rawHtml);
+
+      expect(paragraphs.length, 5);
+      expect(paragraphs[0], '\u3000\u3000转义符号：&lt;tag&gt; 与 &#65;，以及 A & B');
+      expect(paragraphs[1], '\u3000\u3000第一行');
+      expect(paragraphs[2], '\u3000\u3000第二行');
+      expect(paragraphs[3], '\u3000\u3000第三行');
+      expect(paragraphs[4], '\u3000\u3000第四行 “引语”—…');
+    });
+
     test('冷缓存序列化与反序列化严格可逆，且不再重复缩进', () {
       final origin = [
         '\u3000\u3000第一段正文。',

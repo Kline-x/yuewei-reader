@@ -22,6 +22,10 @@ class ContentPipeline {
     ),
   ];
 
+  static final RegExp _scriptStyleNoscriptRe = RegExp(
+    r'<(script|style|noscript)\b[^>]*>[\s\S]*?</\1\s*>',
+    caseSensitive: false,
+  );
   static final RegExp _htmlTagRe = RegExp(r'<[^>]+>');
   static final RegExp _multiDialogueSplitRe =
       RegExp(r'([。！？!?…~][”’])\s*([“‘])');
@@ -69,8 +73,9 @@ class ContentPipeline {
   }) {
     if (rawHtmlOrText.trim().isEmpty) return const [];
 
-    // 1. 保留 HTML 块级与换行结构
+    // 1. 优先彻底剥离 script/style/noscript 整块内容，再保留块级换行结构并剥离其余标签
     var text = rawHtmlOrText
+        .replaceAll(_scriptStyleNoscriptRe, '')
         .replaceAll(RegExp(r'<br\s*/?>', caseSensitive: false), '\n')
         .replaceAll(
           RegExp(r'</(p|div|li|blockquote|h[1-6])>', caseSensitive: false),
@@ -162,7 +167,6 @@ class ContentPipeline {
     var out = input
         .replaceAll('&nbsp;', ' ')
         .replaceAll('&#160;', ' ')
-        .replaceAll('&amp;', '&')
         .replaceAll('&lt;', '<')
         .replaceAll('&gt;', '>')
         .replaceAll('&quot;', '"')
@@ -173,13 +177,16 @@ class ContentPipeline {
         .replaceAll('&ldquo;', '“')
         .replaceAll('&rdquo;', '”');
 
-    out = out.replaceAllMapped(RegExp(r'&#(x?)([0-9a-fA-F]{1,8});'), (m) {
-      final isHex = m.group(1) == 'x';
+    out = out.replaceAllMapped(RegExp(r'&#([xX]?)([0-9a-fA-F]{1,8});'), (m) {
+      final isHex = m.group(1)!.isNotEmpty;
       final code = int.tryParse(m.group(2)!, radix: isHex ? 16 : 10);
-      if (code == null || code < 0x20 || code > 0x10FFFF) return '';
-      if (code >= 0xD800 && code <= 0xDFFF) return '';
+      if (code == null || code > 0x10FFFF) return '';
+      if (code == 0x0A || code == 0x0D) return String.fromCharCode(code);
+      if (code < 0x20 || (code >= 0xD800 && code <= 0xDFFF)) return '';
       return String.fromCharCode(code);
     });
-    return out;
+
+    // 最后解码 &amp;，避免 &amp;lt; / &amp;#65; 发生双重反转义
+    return out.replaceAll('&amp;', '&');
   }
 }

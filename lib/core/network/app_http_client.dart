@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'package:fast_gbk/fast_gbk.dart';
 
@@ -29,11 +30,42 @@ class AppHttpClient {
     );
   }
 
+  /// 安全将文本编码为 GBK 字节流（超出 GBK 字符集的字符自动降级为 UTF-8，绝不抛异常）
+  static Uint8List _encodeGbkSafe(String input) {
+    final out = BytesBuilder(copy: false);
+    for (final rune in input.runes) {
+      if (rune < 0x80) {
+        out.addByte(rune);
+        continue;
+      }
+      final ch = String.fromCharCode(rune);
+      if (rune > 0xFFFF || (rune >= 0xD800 && rune <= 0xDFFF)) {
+        out.add(utf8.encode(ch));
+        continue;
+      }
+      try {
+        final encoded = gbk.encode(ch);
+        final isReplacement = encoded.length == 2 &&
+            encoded[0] == 0xA7 &&
+            encoded[1] == 0xF6 &&
+            rune != 0xE7B3;
+        if (encoded.isEmpty || isReplacement) {
+          out.add(utf8.encode(ch));
+        } else {
+          out.add(encoded);
+        }
+      } catch (_) {
+        out.add(utf8.encode(ch));
+      }
+    }
+    return out.takeBytes();
+  }
+
   /// 按指定字符集对搜索关键词执行 URL 百分比编码（完美兼容 GBK 老牌网文站）
   static String encodeQuery(String input, String charset) {
     final lower = charset.trim().toLowerCase();
     if (lower.contains('gb')) {
-      final bytes = gbk.encode(input);
+      final bytes = _encodeGbkSafe(input);
       final buf = StringBuffer();
       for (final b in bytes) {
         if ((b >= 0x30 && b <= 0x39) ||
@@ -64,12 +96,24 @@ class AppHttpClient {
   }) async {
     final sw = Stopwatch()..start();
     final isPost = method.toUpperCase() == 'POST';
+    final isGbkHint = charsetHint.trim().toLowerCase().contains('gb');
     final headers = <String, dynamic>{};
     if (referer != null && referer.isNotEmpty) {
       headers['Referer'] = referer;
     }
     if (isPost) {
-      headers['Content-Type'] = 'application/x-www-form-urlencoded';
+      headers['Content-Type'] = isGbkHint
+          ? 'application/x-www-form-urlencoded; charset=gbk'
+          : 'application/x-www-form-urlencoded';
+    }
+
+    final Object? requestData;
+    if (!isPost || body == null) {
+      requestData = null;
+    } else if (isGbkHint) {
+      requestData = _encodeGbkSafe(body);
+    } else {
+      requestData = body;
     }
 
     final options = Options(
@@ -82,7 +126,7 @@ class AppHttpClient {
 
     final resp = await _dio.request<List<int>>(
       url,
-      data: isPost ? body : null,
+      data: requestData,
       options: options,
       cancelToken: cancelToken,
     );
@@ -149,6 +193,9 @@ class AppHttpClient {
     final detected = _resolveCharset(bytes, contentType, charsetHint);
     if (detected == 'gbk') {
       return gbk.decode(bytes, allowMalformed: true);
+    }
+    if (detected == 'utf-8') {
+      return utf8.decode(bytes, allowMalformed: true);
     }
 
     // 2. 先尝试严格 UTF-8，若遇非法字节序列再安全降级为 GBK（兼容无声明的老站点）

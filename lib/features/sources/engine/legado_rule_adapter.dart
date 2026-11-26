@@ -128,28 +128,36 @@ class LegadoRuleAdapter {
     if (raw == null || raw.trim().isEmpty) return const RuleField();
     var text = raw.trim();
     var regex = '';
+    var replacement = '';
 
-    // 剥离 `##正则`
+    // 剥离 `##正则` 或 `##正则##替换文本`（保留 replacement 内部空白字符）
     final hashIdx = text.indexOf('##');
     if (hashIdx >= 0) {
-      regex = text.substring(hashIdx + 2).split('##').first.trim();
+      final parts = text.substring(hashIdx + 2).split('##');
+      regex = parts[0];
+      replacement = parts.length > 1 ? parts[1] : '';
       text = text.substring(0, hashIdx).trim();
     }
 
-    // 保留 @xpath: 或 $. 前缀，拆分 CSS 选择器结尾的 @attr
+    // 保留 @xpath: 或 $. 前缀，拆分 CSS 选择器结尾的 @attr（避开跨 || 分支误切）
     var attr = defaultAttr;
     if (!text.startsWith('@xpath:') && !text.startsWith(r'$.')) {
       final lastAt = text.lastIndexOf('@');
       if (lastAt >= 0) {
         final tail = text.substring(lastAt + 1).trim();
-        if (tail.isNotEmpty && !tail.contains(' ')) {
+        if (tail.isNotEmpty && !tail.contains(' ') && !tail.contains('||')) {
           attr = tail == 'textNodes' ? 'text' : tail;
           text = text.substring(0, lastAt).trim();
         }
       }
     }
 
-    return RuleField(selector: text, attr: attr, regex: regex);
+    return RuleField(
+      selector: text,
+      attr: attr,
+      regex: regex,
+      replacement: replacement,
+    );
   }
 
   static ({String url, String method, String body, String charset})
