@@ -10,6 +10,19 @@ class AppFeedback {
   static OverlayEntry? _activeToast;
   static Timer? _toastTimer;
 
+  static void _dismissActiveToast() {
+    _toastTimer?.cancel();
+    _toastTimer = null;
+    final entry = _activeToast;
+    _activeToast = null;
+    if (entry != null) {
+      if (entry.mounted) {
+        entry.remove();
+      }
+      entry.dispose();
+    }
+  }
+
   static void showToast(
     BuildContext context,
     String message, {
@@ -19,9 +32,7 @@ class AppFeedback {
     final overlay = Overlay.maybeOf(context, rootOverlay: true);
     if (overlay == null) return;
 
-    _toastTimer?.cancel();
-    _activeToast?.remove();
-    _activeToast = null;
+    _dismissActiveToast();
 
     final tokens = SoftTokens.of(context);
     final topPad = MediaQuery.paddingOf(context).top;
@@ -88,10 +99,7 @@ class AppFeedback {
 
     overlay.insert(entry);
     _activeToast = entry;
-    _toastTimer = Timer(duration, () {
-      _activeToast?.remove();
-      _activeToast = null;
-    });
+    _toastTimer = Timer(duration, _dismissActiveToast);
   }
 
   /// 主屏底栏上方撤销条（真延迟销毁触发器）

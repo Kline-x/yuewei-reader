@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import '../../core/storage/chapter_file_store.dart';
 import '../tokens/soft_metrics.dart';
 
 /// 典雅纸感立体书封组件
@@ -36,10 +37,9 @@ class BookCover extends StatelessWidget {
         _coverGradients[title.hashCode.abs() % _coverGradients.length];
     final url = coverUrl?.trim() ?? '';
     final hasNetUrl = url.startsWith('http://') || url.startsWith('https://');
-    final isLocalFile = url.startsWith('/') || url.startsWith('file://');
-    final localPath = url.startsWith('file://')
-        ? (Uri.tryParse(url)?.toFilePath() ?? url.substring(7))
-        : url;
+    final isLocalCover = ChapterFileStore.isLocalCoverUrl(url);
+    final syncLocalFile =
+        isLocalCover ? ChapterFileStore.resolveLocalCoverFileSync(url) : null;
 
     return Container(
       width: width,
@@ -59,11 +59,24 @@ class BookCover extends StatelessWidget {
         fit: StackFit.expand,
         children: [
           _buildProceduralCover(palette),
-          if (isLocalFile && localPath.isNotEmpty)
+          if (syncLocalFile != null)
             Image.file(
-              File(localPath),
+              syncLocalFile,
               fit: BoxFit.cover,
               errorBuilder: (_, _, _) => const SizedBox.shrink(),
+            )
+          else if (isLocalCover)
+            FutureBuilder<File?>(
+              future: ChapterFileStore.resolveLocalCoverFileAsync(url),
+              builder: (_, snap) {
+                final file = snap.data;
+                if (file == null) return const SizedBox.shrink();
+                return Image.file(
+                  file,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                );
+              },
             )
           else if (hasNetUrl)
             CachedNetworkImage(

@@ -127,6 +127,20 @@ class ThemeConfigNotifier extends Notifier<ThemeConfigState> {
     await ref.read(appDatabaseProvider).setPreference(_keyPalette, palette.name);
   }
 
+  /// 备份恢复后从数据库热刷新主题模式与意境色盘（不触发偏好修改时间戳）
+  Future<void> reloadFromDb() async {
+    final db = ref.read(appDatabaseProvider);
+    final prefs = ref.read(sharedPrefsProvider);
+    final rawMode = await db.getPreference(_keyMode);
+    final rawPalette = await db.getPreference(_keyPalette);
+    final nextMode = rawMode != null ? _parseMode(rawMode) : state.mode;
+    final nextPalette =
+        rawPalette != null ? SoftPalette.fromName(rawPalette) : state.palette;
+    state = state.copyWith(mode: nextMode, palette: nextPalette);
+    if (rawMode != null) await prefs?.setString(_keyMode, nextMode.name);
+    if (rawPalette != null) await prefs?.setString(_keyPalette, nextPalette.name);
+  }
+
   static ThemeMode _parseMode(String? raw) {
     switch (raw) {
       case 'light':
@@ -142,6 +156,71 @@ class ThemeConfigNotifier extends Notifier<ThemeConfigState> {
 final themeConfigProvider =
     NotifierProvider<ThemeConfigNotifier, ThemeConfigState>(
   ThemeConfigNotifier.new,
+);
+
+@immutable
+class ShelfViewPrefsState {
+  const ShelfViewPrefsState({
+    this.sortMode = ShelfSortMode.lastRead,
+    this.isGridView = false,
+  });
+
+  final ShelfSortMode sortMode;
+  final bool isGridView;
+
+  ShelfViewPrefsState copyWith({ShelfSortMode? sortMode, bool? isGridView}) {
+    return ShelfViewPrefsState(
+      sortMode: sortMode ?? this.sortMode,
+      isGridView: isGridView ?? this.isGridView,
+    );
+  }
+}
+
+/// 书架排序模式与网格视图状态管理器（供书架实时监听，备份恢复后即时刷新）
+class ShelfViewPrefsNotifier extends Notifier<ShelfViewPrefsState> {
+  int _mutationGen = 0;
+
+  @override
+  ShelfViewPrefsState build() {
+    _loadInitial();
+    return const ShelfViewPrefsState();
+  }
+
+  Future<void> _loadInitial() async {
+    final gen = _mutationGen;
+    final repo = ref.read(shelfRepositoryProvider);
+    final sort = await repo.getSortMode();
+    final grid = await repo.getIsGridView();
+    if (gen != _mutationGen) return;
+    state = ShelfViewPrefsState(sortMode: sort, isGridView: grid);
+  }
+
+  Future<void> reloadFromDb() async {
+    final gen = ++_mutationGen;
+    final repo = ref.read(shelfRepositoryProvider);
+    final sort = await repo.getSortMode();
+    final grid = await repo.getIsGridView();
+    if (gen != _mutationGen) return;
+    state = ShelfViewPrefsState(sortMode: sort, isGridView: grid);
+  }
+
+  Future<void> setSortMode(ShelfSortMode mode) async {
+    _mutationGen++;
+    state = state.copyWith(sortMode: mode);
+    await ref.read(shelfRepositoryProvider).saveSortMode(mode);
+  }
+
+  Future<void> toggleGridView() async {
+    _mutationGen++;
+    final next = !state.isGridView;
+    state = state.copyWith(isGridView: next);
+    await ref.read(shelfRepositoryProvider).saveIsGridView(next);
+  }
+}
+
+final shelfViewPrefsProvider =
+    NotifierProvider<ShelfViewPrefsNotifier, ShelfViewPrefsState>(
+  ShelfViewPrefsNotifier.new,
 );
 
 final swipeCoordinatorProvider = Provider<SwipeCoordinator>((ref) {

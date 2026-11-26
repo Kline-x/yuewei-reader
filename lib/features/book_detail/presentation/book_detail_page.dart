@@ -6,7 +6,6 @@ import '../../../core/database/app_database.dart';
 import '../../../core/storage/chapter_file_store.dart';
 import '../../../design_system/components/ambient_background.dart';
 import '../../../design_system/components/empty_error_view.dart';
-import '../../../design_system/components/soft_button.dart';
 import '../../../design_system/feedback/app_feedback.dart';
 import '../../../design_system/tokens/soft_metrics.dart';
 import '../../../design_system/tokens/soft_tokens.dart';
@@ -30,6 +29,7 @@ class BookDetailPage extends ConsumerStatefulWidget {
 
 class _BookDetailPageState extends ConsumerState<BookDetailPage> {
   final ScrollController _scrollCtrl = ScrollController();
+  final GlobalKey _headerKey = GlobalKey();
 
   Book? _book;
   List<Chapter> _chapters = const [];
@@ -149,6 +149,15 @@ class _BookDetailPageState extends ConsumerState<BookDetailPage> {
   Future<void> _toggleShelf() async {
     final b = _book;
     if (b == null) return;
+    if (b.isInShelf && b.sourceId == kLocalBookSourceId) {
+      final confirmed = await BookDetailLoader.confirmRemoveLocalBook(context, b.title);
+      if (!confirmed || !mounted) return;
+      await ref.read(shelfRepositoryProvider).purgeBookData(b.id);
+      if (!mounted) return;
+      AppFeedback.showToast(context, '已移出并清理本地藏书数据');
+      Navigator.of(context).pop();
+      return;
+    }
     final next = !b.isInShelf;
     await ref.read(shelfRepositoryProvider).setInShelf(b.id, next);
     final updated = await ref.read(appDatabaseProvider).getBookById(b.id);
@@ -179,13 +188,10 @@ class _BookDetailPageState extends ConsumerState<BookDetailPage> {
           _book = switched.book;
           _chapters = switched.chapters;
           _sourceName = switched.sourceName;
-          _refreshingMeta = true;
+          _refreshingMeta = false;
           _introExpanded = false;
         });
         AppFeedback.showToast(context, '已换源至 ${rule.name}');
-        if (switched.book != null) {
-          await _refreshFromNetwork(existing: switched.book);
-        }
       },
     );
   }
@@ -205,49 +211,23 @@ class _BookDetailPageState extends ConsumerState<BookDetailPage> {
         child: SafeArea(
           child: Column(
             children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(8.0, 6.0, 16.0, 6.0),
-                child: Row(
-                  children: [
-                    IconButton(
-                      constraints: const BoxConstraints(minWidth: 44.0, minHeight: 44.0),
-                      onPressed: () => Navigator.of(context).pop(),
-                      icon: Icon(Icons.arrow_back_ios_new_rounded, size: 19.0, color: tokens.textPrimary),
-                    ),
-                    const Spacer(),
-                    if (book != null && isLocal)
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
-                        decoration: BoxDecoration(color: tokens.accentSoft, borderRadius: BorderRadius.circular(SoftRadius.pill)),
-                        child: Text('本地藏书', style: SoftTypography.caption.copyWith(color: tokens.accent, fontWeight: FontWeight.w700)),
-                      )
-                    else if (book != null) ...[
-                      IconButton(
-                        tooltip: '刷新书籍信息',
-                        constraints: const BoxConstraints(minWidth: 40.0, minHeight: 40.0),
-                        onPressed: _refreshingMeta ? null : () => _refreshFromNetwork(existing: book, manual: true),
-                        icon: _refreshingMeta
-                            ? SizedBox(width: 16.0, height: 16.0, child: CircularProgressIndicator(strokeWidth: 2.0, color: tokens.accent))
-                            : Icon(Icons.refresh_rounded, size: 20.0, color: tokens.textSecondary),
-                      ),
-                      const SizedBox(width: 4.0),
-                      SoftButton(
-                        label: _sourceName.isNotEmpty ? _sourceName : '切换书源',
-                        icon: Icons.swap_horiz_rounded,
-                        tone: SoftButtonTone.tonal,
-                        compact: true,
-                        onPressed: _openSourceSwitcher,
-                      ),
-                    ],
-                  ],
-                ),
+              BookDetailTopBar(
+                hasBook: book != null,
+                isLocal: isLocal,
+                refreshingMeta: _refreshingMeta,
+                sourceName: _sourceName,
+                onBack: () => Navigator.of(context).pop(),
+                onRefresh: _refreshingMeta || book == null
+                    ? null
+                    : () => _refreshFromNetwork(existing: book, manual: true),
+                onSwitchSource: _openSourceSwitcher,
               ),
               Expanded(
                 child: _loading
                     ? Center(child: CircularProgressIndicator(color: tokens.accent))
                     : _errorMsg != null || book == null
                         ? EmptyErrorView(icon: Icons.cloud_off_rounded, title: '详情加载失败', description: _errorMsg, actionLabel: '重试', onAction: _loadDetail)
-                        : _buildBody(context, tokens, book),
+                        : _buildBody(context, book),
               ),
             ],
           ),
@@ -261,7 +241,7 @@ class _BookDetailPageState extends ConsumerState<BookDetailPage> {
     _loadDetail();
   }
 
-  Widget _buildBody(BuildContext context, SoftTokens tokens, Book book) {
+  Widget _buildBody(BuildContext context, Book book) {
     final displayChapters =
         _descending ? _chapters.reversed.toList() : _chapters;
     return CustomScrollView(
@@ -271,63 +251,68 @@ class _BookDetailPageState extends ConsumerState<BookDetailPage> {
           padding: const EdgeInsets.fromLTRB(
               SoftSpacing.xl, SoftSpacing.sm, SoftSpacing.xl, SoftSpacing.lg),
           sliver: SliverToBoxAdapter(
-            child: BookDetailHeaderSection(
-              book: book,
-              chapterCount: _chapters.length,
-              sourceName: _sourceName,
-              latestChapterTitle: _resolveLatestChapterTitle(book),
-              refreshingMeta: _refreshingMeta,
-              introExpanded: _introExpanded,
-              descending: _descending,
-              onToggleShelf: _toggleShelf,
-              onOpenDownload: () => ReaderDownloadSheet.show(
-                context,
-                bookId: book.id,
-                bookTitle: book.title,
-                totalChapters: _chapters.length,
-                currentChapterIndex: book.currentChapterIndex,
-              ),
-              onStartReading: _chapters.isEmpty
-                  ? null
-                  : () => _pushAndReload('/reader/${book.id}'),
-              onTapLatestChapter: _chapters.isEmpty
-                  ? null
-                  : () => _pushAndReload(
-                      '/reader/${book.id}?chapter=${_chapters.length - 1}'),
-              onToggleIntro: () =>
-                  setState(() => _introExpanded = !_introExpanded),
-              onLocateCurrent: () {
-                final idx = displayChapters.indexWhere(
-                  (c) => c.chapterIndex == book.currentChapterIndex,
-                );
-                if (idx >= 0 && _scrollCtrl.hasClients) {
+            child: KeyedSubtree(
+              key: _headerKey,
+              child: BookDetailHeaderSection(
+                book: book,
+                chapterCount: _chapters.length,
+                sourceName: _sourceName,
+                latestChapterTitle: _resolveLatestChapterTitle(book),
+                refreshingMeta: _refreshingMeta,
+                introExpanded: _introExpanded,
+                descending: _descending,
+                onToggleShelf: _toggleShelf,
+                onOpenDownload: () => ReaderDownloadSheet.show(
+                  context,
+                  bookId: book.id,
+                  bookTitle: book.title,
+                  totalChapters: _chapters.length,
+                  currentChapterIndex: book.currentChapterIndex,
+                ),
+                onStartReading: _chapters.isEmpty
+                    ? null
+                    : () => _pushAndReload('/reader/${book.id}'),
+                onTapLatestChapter: _chapters.isEmpty
+                    ? null
+                    : () => _pushAndReload(
+                        '/reader/${book.id}?chapter=${_chapters.length - 1}'),
+                onToggleIntro: () =>
+                    setState(() => _introExpanded = !_introExpanded),
+                onLocateCurrent: () {
+                  final idx = displayChapters.indexWhere(
+                    (c) => c.chapterIndex == book.currentChapterIndex,
+                  );
+                  if (idx < 0 || !_scrollCtrl.hasClients) return;
+                  final box =
+                      _headerKey.currentContext?.findRenderObject() as RenderBox?;
+                  final headerH = (box?.size.height ?? 460.0) +
+                      SoftSpacing.sm +
+                      SoftSpacing.lg;
+                  final target = (headerH + idx * BookDetailChapterTile.rowExtent - 72.0)
+                      .clamp(0.0, _scrollCtrl.position.maxScrollExtent);
                   _scrollCtrl.animateTo(
-                    (520.0 + idx * 48.0).clamp(
-                        0.0, _scrollCtrl.position.maxScrollExtent),
+                    target,
                     duration: const Duration(milliseconds: 280),
                     curve: Curves.easeOutCubic,
                   );
-                }
-              },
-              onToggleOrder: () => setState(() => _descending = !_descending),
+                },
+                onToggleOrder: () => setState(() => _descending = !_descending),
+              ),
             ),
           ),
         ),
         SliverPadding(
           padding: const EdgeInsets.only(bottom: SoftSpacing.xxl),
-          sliver: SliverList.separated(
+          sliver: SliverFixedExtentList.builder(
+            itemExtent: BookDetailChapterTile.rowExtent,
             itemCount: displayChapters.length,
-            separatorBuilder: (_, _) => Divider(
-                height: 1.0,
-                indent: SoftSpacing.xl,
-                endIndent: SoftSpacing.xl,
-                color: tokens.borderSubtle),
             itemBuilder: (_, i) {
               final ch = displayChapters[i];
               return BookDetailChapterTile(
                 chapter: ch,
                 isCurrent: book.hasEverRead &&
                     ch.chapterIndex == book.currentChapterIndex,
+                showDivider: i < displayChapters.length - 1,
                 onTap: () => _pushAndReload(
                     '/reader/${book.id}?chapter=${ch.chapterIndex}'),
               );

@@ -99,14 +99,16 @@ class SoftButton extends StatelessWidget {
                       Icon(icon, size: compact ? 15 : 17, color: fg),
                       const SizedBox(width: 6),
                     ],
-                    Text(
-                      label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: compact ? 12.5 : 13.5,
-                        fontWeight: FontWeight.w700,
-                        color: fg,
+                    Flexible(
+                      child: Text(
+                        label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: compact ? 12.5 : 13.5,
+                          fontWeight: FontWeight.w700,
+                          color: fg,
+                        ),
                       ),
                     ),
                   ],

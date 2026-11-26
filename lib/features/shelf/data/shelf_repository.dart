@@ -1,27 +1,14 @@
 import 'package:drift/drift.dart';
-import 'package:lpinyin/lpinyin.dart';
 import '../../../core/database/app_database.dart';
 import '../../../core/database/bookmark_dao.dart';
 import '../../../core/storage/chapter_file_store.dart';
 import '../../download/download_manager.dart';
 import '../../sources/domain/book_match_models.dart';
 import '../../sources/engine/source_crawler_service.dart';
+import 'chapter_cache_migrator.dart';
+import 'shelf_book_sorter.dart';
 
-enum ShelfSortMode {
-  lastRead('最近阅读'),
-  pinyin('书名拼音'),
-  progress('阅读进度');
-
-  const ShelfSortMode(this.label);
-  final String label;
-
-  static ShelfSortMode fromName(String? raw) {
-    return ShelfSortMode.values.firstWhere(
-      (e) => e.name == raw,
-      orElse: () => ShelfSortMode.lastRead,
-    );
-  }
-}
+export 'shelf_book_sorter.dart' show ShelfSortMode;
 
 /// 书架与书籍全生命周期仓库（ACID 事务 + 延迟真撤销 + 换源强制清缓存）
 class ShelfRepository {
@@ -41,43 +28,14 @@ class ShelfRepository {
   Stream<List<Book>> watchShelfBooks() => db.watchShelfBooks();
 
   /// 精准计算单本书阅读进度（未读过严格返回 0.0）
-  static double computeProgress(Book book) {
-    if (!book.hasEverRead) return 0.0;
-    if (book.totalChapters <= 0) return 0.0;
-    return ((book.currentChapterIndex + 1) / book.totalChapters).clamp(0.0, 1.0);
-  }
+  static double computeProgress(Book book) =>
+      ShelfBookSorter.computeProgress(book);
 
-  static String formatProgressLabel(Book book) {
-    if (!book.hasEverRead) return '未读 · 0%';
-    final ratio = computeProgress(book);
-    final pct = (ratio * 100).round();
-    if (pct == 0 && ratio > 0) return '已读 <1%';
-    return '已读 $pct%';
-  }
+  static String formatProgressLabel(Book book) =>
+      ShelfBookSorter.formatProgressLabel(book);
 
-  static List<Book> sortBooks(List<Book> input, ShelfSortMode mode) {
-    final list = List<Book>.from(input);
-    final pinyinCache = <String, String>{};
-    String pinyinOf(Book b) => pinyinCache.putIfAbsent(
-          b.id,
-          () => PinyinHelper.getShortPinyin(b.title).toLowerCase(),
-        );
-
-    list.sort((a, b) {
-      if (a.isPinned != b.isPinned) return a.isPinned ? -1 : 1;
-      switch (mode) {
-        case ShelfSortMode.lastRead:
-          final at = a.lastReadAt ?? a.addedAt ?? a.updatedAt;
-          final bt = b.lastReadAt ?? b.addedAt ?? b.updatedAt;
-          return bt.compareTo(at);
-        case ShelfSortMode.pinyin:
-          return pinyinOf(a).compareTo(pinyinOf(b));
-        case ShelfSortMode.progress:
-          return computeProgress(b).compareTo(computeProgress(a));
-      }
-    });
-    return list;
-  }
+  static List<Book> sortBooks(List<Book> input, ShelfSortMode mode) =>
+      ShelfBookSorter.sortBooks(input, mode);
 
   Future<ShelfSortMode> getSortMode() async {
     return ShelfSortMode.fromName(await db.getPreference(_prefSortMode));
@@ -133,51 +91,73 @@ class ShelfRepository {
     final cleanOldUpdate =
         SourceCrawlerService.sanitizeUpdateTime(existing?.lastUpdateTime ?? '');
 
-    await db.upsertBook(
-      BooksCompanion(
-        id: Value(bookId),
-        title: Value(title),
-        cleanTitle: Value(cleanTitle),
-        author: Value(author),
-        coverUrl: Value(coverUrl.isNotEmpty ? coverUrl : (existing?.coverUrl ?? '')),
-        intro: Value(cleanNewIntro.isNotEmpty ? cleanNewIntro : cleanOldIntro),
-        category: Value(cleanNewCat.isNotEmpty ? cleanNewCat : cleanOldCat),
-        statusText: Value(
-          cleanNewStatus.isNotEmpty
-              ? cleanNewStatus
-              : (cleanOldStatus.isNotEmpty ? cleanOldStatus : '连载中'),
-        ),
-        latestChapterTitle: Value(resolvedLatest),
-        lastUpdateTime: Value(
-          cleanNewUpdate.isNotEmpty ? cleanNewUpdate : cleanOldUpdate,
-        ),
-        sourceId: Value(sourceId),
-        bookUrl: Value(bookUrl),
-        tocUrl: Value(tocUrl),
-        totalChapters: Value(chapters.isNotEmpty ? chapters.length : (existing?.totalChapters ?? 0)),
-        currentChapterIndex: Value(existing?.currentChapterIndex ?? 0),
-        currentChapterTitle: Value(
-          existing?.currentChapterTitle.isNotEmpty == true
-              ? existing!.currentChapterTitle
-              : (chapters.isNotEmpty ? chapters.first.title : ''),
-        ),
-        currentCharOffset: Value(existing?.currentCharOffset ?? 0),
-        hasEverRead: Value(existing?.hasEverRead ?? false),
-        isPinned: Value(existing?.isPinned ?? false),
-        isInShelf: Value((existing?.isInShelf ?? false) || putInShelf),
-        lastReadAt: Value(existing?.lastReadAt),
-        addedAt: Value(existing?.addedAt ?? (putInShelf ? now : null)),
-        updatedAt: Value(now),
-      ),
-    );
-
+    final isSameSource = existing != null && existing.sourceId == sourceId;
+    List<ChaptersCompanion>? chapterRows;
     if (chapters.isNotEmpty) {
-      final rows = chapters
-          .map((c) => ChaptersCompanion.insert(
-                bookId: bookId, chapterIndex: c.index, title: c.title, url: c.url))
-          .toList();
-      await db.replaceBookChapters(bookId, rows);
+      if (isSameSource) {
+        final oldChapters = await db.getChaptersByBook(bookId);
+        chapterRows = await ChapterCacheMigrator.prepareMergedChapterRows(
+          bookId: bookId,
+          oldChapters: oldChapters,
+          newChapters: chapters,
+          fileStore: fileStore,
+        );
+      } else {
+        chapterRows = chapters
+            .map((c) => ChaptersCompanion.insert(
+                  bookId: bookId, chapterIndex: c.index, title: c.title, url: c.url))
+            .toList();
+      }
     }
+
+    await db.transaction(() async {
+      await db.upsertBook(
+        BooksCompanion(
+          id: Value(bookId),
+          title: Value(title),
+          cleanTitle: Value(cleanTitle),
+          author: Value(author),
+          coverUrl: Value(coverUrl.isNotEmpty ? coverUrl : (existing?.coverUrl ?? '')),
+          intro: Value(cleanNewIntro.isNotEmpty ? cleanNewIntro : cleanOldIntro),
+          category: Value(cleanNewCat.isNotEmpty ? cleanNewCat : cleanOldCat),
+          statusText: Value(
+            cleanNewStatus.isNotEmpty
+                ? cleanNewStatus
+                : (cleanOldStatus.isNotEmpty ? cleanOldStatus : '连载中'),
+          ),
+          latestChapterTitle: Value(resolvedLatest),
+          lastUpdateTime: Value(
+            cleanNewUpdate.isNotEmpty ? cleanNewUpdate : cleanOldUpdate,
+          ),
+          sourceId: Value(sourceId),
+          bookUrl: Value(bookUrl),
+          tocUrl: Value(tocUrl),
+          totalChapters: Value(
+            chapters.isNotEmpty ? chapters.length : (existing?.totalChapters ?? 0),
+          ),
+          currentChapterIndex: Value(existing?.currentChapterIndex ?? 0),
+          currentChapterTitle: Value(
+            existing?.currentChapterTitle.isNotEmpty == true
+                ? existing!.currentChapterTitle
+                : (chapters.isNotEmpty ? chapters.first.title : ''),
+          ),
+          currentCharOffset: Value(existing?.currentCharOffset ?? 0),
+          hasEverRead: Value(existing?.hasEverRead ?? false),
+          isPinned: Value(existing?.isPinned ?? false),
+          isInShelf: Value((existing?.isInShelf ?? false) || putInShelf),
+          lastReadAt: Value(existing?.lastReadAt),
+          addedAt: Value(existing?.addedAt ?? (putInShelf ? now : null)),
+          updatedAt: Value(now),
+        ),
+      );
+
+      if (chapterRows != null) {
+        await (db.delete(db.chapters)..where((t) => t.bookId.equals(bookId))).go();
+        await db.batch((b) {
+          b.insertAll(db.chapters, chapterRows!, mode: InsertMode.insertOrReplace);
+        });
+      }
+    });
 
     return (await db.getBookById(bookId))!;
   }
@@ -213,6 +193,13 @@ class ShelfRepository {
     });
   }
 
+  /// 仅当书籍仍处于非书架状态时才执行物理清理（供 4 秒撤销条提交前二次核验）
+  Future<void> purgeBookDataIfNotInShelf(String bookId) async {
+    final current = await db.getBookById(bookId);
+    if (current == null || current.isInShelf) return;
+    await purgeBookData(bookId);
+  }
+
   /// 清空单本书离线章节文件（本地导入书籍正文绝对保留，不予清理）
   Future<void> clearBookChapterFiles(String bookId) async {
     final book = await db.getBookById(bookId);
@@ -224,14 +211,19 @@ class ShelfRepository {
     );
   }
 
-  /// 清空非本地导入书籍的离线缓存文件与数据库索引（本地书正文与 cached 状态严格保留）
+  /// 清空非本地在架书籍的离线缓存与孤儿目录（仅在架本地书正文与封面严格保留）
   Future<void> clearAllCaches() async {
     downloadManager.cancelAll();
     final localRows = await (db.select(db.books)
-          ..where((t) => t.sourceId.equals(kLocalBookSourceId)))
+          ..where(
+            (t) =>
+                t.sourceId.equals(kLocalBookSourceId) &
+                t.isInShelf.equals(true),
+          ))
         .get();
     final localIds = localRows.map((b) => b.id).toSet();
     await fileStore.clearNonLocalCaches(localIds);
+    await fileStore.clearOrphanCovers(localIds);
     final stmt = localIds.isEmpty
         ? db.update(db.chapters)
         : (db.update(db.chapters)..where((t) => t.bookId.isNotIn(localIds)));
@@ -240,7 +232,7 @@ class ShelfRepository {
     );
   }
 
-  /// 无感换源：停掉在途下载 → 强制清空旧源章节缓存 → 替换目录 → 按章名相似度对齐新章节下标
+  /// 无感换源：停掉在途下载 → 清空旧源缓存 → 单事务替换目录、更新书源与重映射书签下标
   Future<int> switchBookSource({
     required String bookId,
     required String newSourceId,
@@ -260,57 +252,61 @@ class ShelfRepository {
 
     var targetIdx = fallbackChapterIndex ?? 0;
     if (preferredChapterTitle != null && preferredChapterTitle.isNotEmpty) {
-      final matchedIdx =
-          _matchChapterIndex(newChapters, preferredChapterTitle, targetIdx);
-      targetIdx = matchedIdx;
+      targetIdx = _matchChapterIndex(newChapters, preferredChapterTitle, targetIdx);
     }
-    targetIdx = newChapters.isEmpty
-        ? 0
-        : targetIdx.clamp(0, newChapters.length - 1);
+    targetIdx = newChapters.isEmpty ? 0 : targetIdx.clamp(0, newChapters.length - 1);
 
-    final targetTitle =
-        newChapters.isNotEmpty ? newChapters[targetIdx].title : '';
+    final targetTitle = newChapters.isNotEmpty ? newChapters[targetIdx].title : '';
     final cleanIntro = SourceCrawlerService.cleanSeoIntro(newIntro ?? '');
     final cleanCat = SourceCrawlerService.sanitizeBadge(newCategory ?? '');
     final cleanStatus = SourceCrawlerService.sanitizeBadge(newStatusText ?? '');
-    final cleanLatest = SourceCrawlerService.sanitizeLatestChapter(
-      newLatestChapterTitle ?? '',
-    );
+    final cleanLatest = SourceCrawlerService.sanitizeLatestChapter(newLatestChapterTitle ?? '');
     final resolvedLatest = cleanLatest.isNotEmpty
         ? cleanLatest
         : (newChapters.isNotEmpty ? newChapters.last.title : '');
-    final cleanUpdate =
-        SourceCrawlerService.sanitizeUpdateTime(newLastUpdateTime ?? '');
+    final cleanUpdate = SourceCrawlerService.sanitizeUpdateTime(newLastUpdateTime ?? '');
+    final chapterRows = newChapters
+        .map((c) => ChaptersCompanion.insert(
+              bookId: bookId, chapterIndex: c.index, title: c.title, url: c.url))
+        .toList();
 
-    await db.replaceBookChapters(
-      bookId,
-      newChapters
-          .map((c) => ChaptersCompanion.insert(
-                bookId: bookId, chapterIndex: c.index, title: c.title, url: c.url))
-          .toList(),
-    );
-
-    await (db.update(db.books)..where((t) => t.id.equals(bookId))).write(
-      BooksCompanion(
-        sourceId: Value(newSourceId),
-        bookUrl: Value(newBookUrl),
-        tocUrl: Value(newTocUrl),
-        totalChapters: Value(newChapters.length),
-        currentChapterIndex: Value(targetIdx),
-        currentChapterTitle: Value(targetTitle),
-        currentCharOffset: const Value(0),
-        intro: cleanIntro.isNotEmpty ? Value(cleanIntro) : const Value.absent(),
-        category: cleanCat.isNotEmpty ? Value(cleanCat) : const Value.absent(),
-        statusText:
-            cleanStatus.isNotEmpty ? Value(cleanStatus) : const Value.absent(),
-        latestChapterTitle: resolvedLatest.isNotEmpty
-            ? Value(resolvedLatest)
-            : const Value.absent(),
-        lastUpdateTime:
-            cleanUpdate.isNotEmpty ? Value(cleanUpdate) : const Value.absent(),
-        updatedAt: Value(DateTime.now()),
-      ),
-    );
+    await db.transaction(() async {
+      await (db.delete(db.chapters)..where((t) => t.bookId.equals(bookId))).go();
+      if (chapterRows.isNotEmpty) {
+        await db.batch((b) {
+          b.insertAll(db.chapters, chapterRows, mode: InsertMode.insertOrReplace);
+        });
+      }
+      await (db.update(db.books)..where((t) => t.id.equals(bookId))).write(
+        BooksCompanion(
+          sourceId: Value(newSourceId),
+          bookUrl: Value(newBookUrl),
+          tocUrl: Value(newTocUrl),
+          totalChapters: Value(newChapters.length),
+          currentChapterIndex: Value(targetIdx),
+          currentChapterTitle: Value(targetTitle),
+          currentCharOffset: const Value(0),
+          intro: cleanIntro.isNotEmpty ? Value(cleanIntro) : const Value.absent(),
+          category: cleanCat.isNotEmpty ? Value(cleanCat) : const Value.absent(),
+          statusText: cleanStatus.isNotEmpty ? Value(cleanStatus) : const Value.absent(),
+          latestChapterTitle:
+              resolvedLatest.isNotEmpty ? Value(resolvedLatest) : const Value.absent(),
+          lastUpdateTime: cleanUpdate.isNotEmpty ? Value(cleanUpdate) : const Value.absent(),
+          updatedAt: Value(DateTime.now()),
+        ),
+      );
+      if (newChapters.isNotEmpty) {
+        final existingBookmarks = await db.getBookmarksByBook(bookId);
+        for (final bm in existingBookmarks) {
+          final remapped = _matchChapterIndex(newChapters, bm.chapterTitle, bm.chapterIndex);
+          if (remapped != bm.chapterIndex) {
+            await (db.update(db.bookmarks)..where((t) => t.id.equals(bm.id))).write(
+              BookmarksCompanion(chapterIndex: Value(remapped)),
+            );
+          }
+        }
+      }
+    });
     return targetIdx;
   }
 
@@ -322,12 +318,15 @@ class ShelfRepository {
     if (chapters.isEmpty) return 0;
     String norm(String s) => s.replaceAll(RegExp(r'[\s：:【】\[\]]'), '');
     final cleanTarget = norm(targetTitle);
+    if (cleanTarget.isEmpty) return fallbackIndex.clamp(0, chapters.length - 1);
     for (var i = 0; i < chapters.length; i++) {
       if (norm(chapters[i].title) == cleanTarget) return i;
     }
     for (var i = 0; i < chapters.length; i++) {
       final cand = norm(chapters[i].title);
-      if (cand.contains(cleanTarget) || cleanTarget.contains(cand)) return i;
+      if (cand.isNotEmpty && (cand.contains(cleanTarget) || cleanTarget.contains(cand))) {
+        return i;
+      }
     }
     return fallbackIndex.clamp(0, chapters.length - 1);
   }

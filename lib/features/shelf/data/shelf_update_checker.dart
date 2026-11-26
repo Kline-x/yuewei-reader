@@ -3,6 +3,7 @@ import '../../../core/database/app_database.dart';
 import '../../../core/storage/chapter_file_store.dart';
 import '../../sources/data/source_repository.dart';
 import '../../sources/engine/source_crawler_service.dart';
+import 'chapter_cache_migrator.dart';
 
 /// 书架在线连载追更批量核查器（自动跳过本地藏书，并发度 ≤ 4，≤ 160 行）
 class ShelfUpdateChecker {
@@ -10,12 +11,15 @@ class ShelfUpdateChecker {
     required this.db,
     required this.sourceRepo,
     required this.crawler,
+    ChapterFileStore? fileStore,
     this.maxConcurrency = 4,
-  }) : assert(maxConcurrency >= 1 && maxConcurrency <= 4);
+  })  : _fileStore = fileStore ?? ChapterFileStore(),
+        assert(maxConcurrency >= 1 && maxConcurrency <= 4);
 
   final AppDatabase db;
   final SourceRepository sourceRepo;
   final SourceCrawlerService crawler;
+  final ChapterFileStore _fileStore;
   final int maxConcurrency;
 
   /// 批量检查书架在线书更新并保留原有阅读进度与已缓存章节标记
@@ -79,39 +83,36 @@ class ShelfUpdateChecker {
         return (checked: true, updated: false);
       }
 
-      // 尽量保留已离线缓存章节的本地标记，同时严格锁定原阅读进度不被覆盖
+      // 偏移章节先通过物理文件安全迁移对齐磁盘，再在同一事务中原子落库目录与书籍元数据
       final oldChapters = await db.getChaptersByBook(book.id);
-      final cachedByUrl = <String, Chapter>{
-        for (final c in oldChapters)
-          if (c.isCached && c.url.isNotEmpty) c.url: c,
-      };
-
-      final rows = newChapters.map((c) {
-        final prev = cachedByUrl[c.url];
-        return ChaptersCompanion.insert(
-          bookId: book.id,
-          chapterIndex: c.index,
-          title: c.title,
-          url: c.url,
-          isCached: Value(prev != null),
-          cachedBytes: Value(prev?.cachedBytes ?? 0),
-        );
-      }).toList();
-
-      await db.replaceBookChapters(book.id, rows);
-      await (db.update(db.books)..where((t) => t.id.equals(book.id))).write(
-        BooksCompanion(
-          totalChapters: Value(newChapters.length),
-          latestChapterTitle: resolvedLatest.isNotEmpty
-              ? Value(resolvedLatest)
-              : const Value.absent(),
-          lastUpdateTime: resolvedTime.isNotEmpty
-              ? Value(resolvedTime)
-              : const Value.absent(),
-          hasUnreadUpdate: const Value(true),
-          updatedAt: Value(DateTime.now()),
-        ),
+      final rows = await ChapterCacheMigrator.prepareMergedChapterRows(
+        bookId: book.id,
+        oldChapters: oldChapters,
+        newChapters: newChapters,
+        fileStore: _fileStore,
       );
+
+      await db.transaction(() async {
+        await (db.delete(db.chapters)..where((t) => t.bookId.equals(book.id))).go();
+        if (rows.isNotEmpty) {
+          await db.batch((b) {
+            b.insertAll(db.chapters, rows, mode: InsertMode.insertOrReplace);
+          });
+        }
+        await (db.update(db.books)..where((t) => t.id.equals(book.id))).write(
+          BooksCompanion(
+            totalChapters: Value(newChapters.length),
+            latestChapterTitle: resolvedLatest.isNotEmpty
+                ? Value(resolvedLatest)
+                : const Value.absent(),
+            lastUpdateTime: resolvedTime.isNotEmpty
+                ? Value(resolvedTime)
+                : const Value.absent(),
+            hasUnreadUpdate: const Value(true),
+            updatedAt: Value(DateTime.now()),
+          ),
+        );
+      });
       return (checked: true, updated: true);
     } catch (_) {
       return (checked: false, updated: false);

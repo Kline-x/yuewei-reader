@@ -46,14 +46,28 @@ class WebdavConfig {
       );
 }
 
-/// WebDAV 云端备份客户端（遵循 RFC 4918，兼容坚果云 / Nextcloud / Alist，严控 <= 240 行）
+/// 远端快照下载载荷（透传正文与远端 ETag，支持乐观并发控制）
+@immutable
+class WebdavRemoteBackup {
+  const WebdavRemoteBackup({required this.content, this.etag});
+
+  final String content;
+  final String? etag;
+}
+
+/// WebDAV 云端备份客户端（遵循 RFC 4918，兼容坚果云 / Nextcloud / Alist，严控 <= 350 行）
 class WebdavSyncClient {
   WebdavSyncClient({required this.config, Dio? dio})
       : _dio = dio ?? _buildDefaultDio();
 
   final WebdavConfig config;
   final Dio _dio;
+  String? _lastRemoteEtag;
 
+  /// 最近一次 GET / PUT 成功交互观测到的远端 ETag（未返回时为 null）
+  String? get lastRemoteEtag => _lastRemoteEtag;
+
+  static const int _maxRedirectHops = 5;
   static const String remoteDirName = 'yuewei_sync';
   static const String remoteBackupFileName = 'yuewei_backup_v1.json';
   static const String _prefUrl = 'webdav_url';
@@ -68,8 +82,7 @@ class WebdavSyncClient {
         connectTimeout: const Duration(seconds: 10),
         sendTimeout: const Duration(seconds: 15),
         receiveTimeout: const Duration(seconds: 15),
-        followRedirects: true,
-        maxRedirects: 5,
+        followRedirects: false,
         responseType: ResponseType.bytes,
         validateStatus: (_) => true,
       ));
@@ -163,40 +176,78 @@ class WebdavSyncClient {
     throw _mapHttpStatusError(code, scene: '测试连接');
   }
 
-  /// 确保远端 `yuewei_sync/` 目录存在（MKCOL 兼容 200 / 201 / 204 / 301 / 405）
+  /// 确保远端 `yuewei_sync/` 目录存在（301 由重定向循环处理，仅 200 / 201 / 204 / 405 判成功）
   Future<void> ensureRemoteDir() async {
-    final resp = await _send('MKCOL', '${_normalizedBaseUrl()}$remoteDirName/', headers: _authHeaders());
+    final resp = await _send(
+      'MKCOL',
+      '${_normalizedBaseUrl()}$remoteDirName/',
+      headers: _authHeaders(),
+    );
     final code = resp.statusCode ?? 0;
-    if (code == 201 || code == 405 || code == 301 || code == 200 || code == 204) return;
+    if (code == 201 || code == 405 || code == 200 || code == 204) return;
     throw _mapHttpStatusError(code, scene: '创建同步目录');
   }
 
-  /// 上传快照至 `yuewei_sync/yuewei_backup_v1.json`（兼容 200 / 201 / 204）
-  Future<void> uploadBackup(String json) async {
+  /// 上传快照至 `yuewei_sync/yuewei_backup_v1.json`（可选透传 If-Match ETag，兼容 200 / 201 / 204）
+  Future<void> uploadBackup(String json, {String? expectedEtag}) async {
     final baseUrl = _normalizedBaseUrl();
     await ensureRemoteDir();
+    final extra = <String, String>{
+      'Content-Type': 'application/json; charset=utf-8',
+      if (expectedEtag != null && expectedEtag.trim().isNotEmpty)
+        'If-Match': expectedEtag.trim(),
+    };
     final resp = await _send(
       'PUT',
       '$baseUrl$remoteDirName/$remoteBackupFileName',
       data: utf8.encode(json),
-      headers: _authHeaders({'Content-Type': 'application/json; charset=utf-8'}),
+      headers: _authHeaders(extra),
     );
     final code = resp.statusCode ?? 0;
-    if (code == 200 || code == 201 || code == 204) return;
+    if (code == 200 || code == 201 || code == 204) {
+      final etag = resp.headers.value('etag')?.trim();
+      if (etag != null && etag.isNotEmpty) _lastRemoteEtag = etag;
+      return;
+    }
     throw _mapHttpStatusError(code, scene: '上传云备份');
   }
 
-  /// 拉取远端快照字符串；若云端尚无备份（404）则返回 null
-  Future<String?> downloadBackup() async {
+  /// 拉取远端快照与 ETag 元信息；若云端尚无备份（404）则返回 null
+  Future<WebdavRemoteBackup?> downloadBackupWithMeta() async {
     final resp = await _send(
       'GET',
       '${_normalizedBaseUrl()}$remoteDirName/$remoteBackupFileName',
       headers: _authHeaders({'Accept': 'application/json, text/plain, */*'}),
     );
     final code = resp.statusCode ?? 0;
-    if (code == 404) return null;
-    if (code == 200) return utf8.decode(resp.data ?? const <int>[], allowMalformed: true);
+    if (code == 404) {
+      _lastRemoteEtag = null;
+      return null;
+    }
+    if (code == 200) {
+      final rawEtag = resp.headers.value('etag')?.trim();
+      final etag = (rawEtag != null && rawEtag.isNotEmpty) ? rawEtag : null;
+      _lastRemoteEtag = etag;
+      final content = utf8.decode(resp.data ?? const <int>[], allowMalformed: true);
+      return WebdavRemoteBackup(content: content, etag: etag);
+    }
     throw _mapHttpStatusError(code, scene: '拉取云备份');
+  }
+
+  /// 拉取远端快照字符串；若云端尚无备份（404）则返回 null
+  Future<String?> downloadBackup() async {
+    final res = await downloadBackupWithMeta();
+    return res?.content;
+  }
+
+  static bool _isRedirectStatus(int code) =>
+      code == 301 || code == 302 || code == 307 || code == 308;
+
+  static bool _canForwardAuth(Uri origin, Uri target) {
+    if (origin.host.toLowerCase() != target.host.toLowerCase()) return false;
+    // 防止从 HTTPS 降级重定向至明文 HTTP 时泄露 Basic Auth 凭证
+    if (origin.isScheme('https') && !target.isScheme('https')) return false;
+    return true;
   }
 
   Future<Response<List<int>>> _send(
@@ -205,12 +256,47 @@ class WebdavSyncClient {
     Object? data,
     required Map<String, String> headers,
   }) async {
+    final originUri = Uri.parse(url);
+    var currentUri = originUri;
+    var currentHeaders = Map<String, String>.from(headers);
+
     try {
-      return await _dio.request<List<int>>(
-        url,
-        data: data,
-        options: Options(method: method, headers: headers, responseType: ResponseType.bytes, validateStatus: (_) => true),
-      );
+      for (var hop = 0; hop <= _maxRedirectHops; hop++) {
+        final resp = await _dio.request<List<int>>(
+          currentUri.toString(),
+          data: data,
+          options: Options(
+            method: method,
+            headers: currentHeaders,
+            followRedirects: false,
+            responseType: ResponseType.bytes,
+            validateStatus: (_) => true,
+          ),
+        );
+        final code = resp.statusCode ?? 0;
+        if (!_isRedirectStatus(code)) return resp;
+
+        final location = resp.headers.value(HttpHeaders.locationHeader)?.trim();
+        if (location == null || location.isEmpty) return resp;
+        if (hop == _maxRedirectHops) {
+          throw WebdavSyncException(
+            'WebDAV 重定向次数过多（超过 $_maxRedirectHops 跳），请检查服务器地址',
+            statusCode: code,
+          );
+        }
+
+        final nextUri = currentUri.resolve(location);
+        if (!nextUri.isScheme('http') && !nextUri.isScheme('https')) {
+          throw WebdavSyncException('WebDAV 重定向目标协议无效', statusCode: code);
+        }
+        currentHeaders = Map<String, String>.from(headers);
+        if (!_canForwardAuth(originUri, nextUri)) {
+          currentHeaders.remove('Authorization');
+          currentHeaders.remove('authorization');
+        }
+        currentUri = nextUri;
+      }
+      throw const WebdavSyncException('WebDAV 重定向次数过多，请检查服务器地址');
     } on DioException catch (e) {
       throw _mapDioError(e);
     } on SocketException {
@@ -247,6 +333,7 @@ class WebdavSyncClient {
     if (code == 403) return const WebdavSyncException('云端拒绝访问（HTTP 403），请确认账号具备读写权限', statusCode: 403);
     if (code == 404) return WebdavSyncException('$scene失败：远端 WebDAV 路径不存在（HTTP 404）', statusCode: 404);
     if (code == 409) return WebdavSyncException('$scene失败：远端父目录不存在或路径冲突（HTTP 409），请确认 WebDAV 根路径已创建', statusCode: 409);
+    if (code == 412) return const WebdavSyncException('云端备份已被其他设备更新（HTTP 412），请重新点击同步以合并最新进度', statusCode: 412);
     if (code >= 500) return WebdavSyncException('云端服务器异常（HTTP $code），请稍后再试', statusCode: code);
     return WebdavSyncException('$scene失败（HTTP $code），请检查服务器地址与兼容配置', statusCode: code);
   }

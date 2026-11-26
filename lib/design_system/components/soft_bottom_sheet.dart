@@ -50,7 +50,11 @@ class SoftBottomSheet extends StatelessWidget {
   Widget build(BuildContext context) {
     final tokens = SoftTokens.of(context);
     final media = MediaQuery.of(context);
-    final maxH = media.size.height * maxHeightFactor;
+    final usableH =
+        (media.size.height - media.viewInsets.bottom).clamp(0.0, media.size.height);
+    final safeUpper = (usableH - media.padding.top).clamp(0.0, usableH);
+    final minFloor = safeUpper < 180.0 ? safeUpper : 180.0;
+    final maxH = (usableH * maxHeightFactor).clamp(minFloor, safeUpper);
 
     return Padding(
       padding: EdgeInsets.only(bottom: media.viewInsets.bottom),

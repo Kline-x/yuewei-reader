@@ -9,12 +9,22 @@ import '../../../design_system/tokens/soft_metrics.dart';
 import '../../../design_system/tokens/soft_tokens.dart';
 import '../backup_snapshot_codec.dart';
 import '../webdav_sync_client.dart';
+import '../webdav_sync_coordinator.dart';
 
 /// WebDAV 云同步配置与双向同步卡片（兼容坚果云 / Nextcloud / Alist，严控 <= 260 行）
 class SyncWebdavCard extends ConsumerStatefulWidget {
-  const SyncWebdavCard({super.key, required this.onRestored});
+  const SyncWebdavCard({
+    super.key,
+    required this.onRestored,
+    this.externalBusy = false,
+    this.onBusyChanged,
+    this.onPreferencesUpdated,
+  });
 
   final Future<void> Function(BackupRestoreSummary summary) onRestored;
+  final bool externalBusy;
+  final ValueChanged<bool>? onBusyChanged;
+  final Future<void> Function()? onPreferencesUpdated;
 
   @override
   ConsumerState<SyncWebdavCard> createState() => _SyncWebdavCardState();
@@ -29,7 +39,7 @@ class _SyncWebdavCardState extends ConsumerState<SyncWebdavCard> {
   String? _busyAction;
   DateTime? _lastSyncAt;
 
-  bool get _isBusy => _busyAction != null;
+  bool get _isBusy => _busyAction != null || widget.externalBusy;
 
   @override
   void initState() {
@@ -67,6 +77,7 @@ class _SyncWebdavCardState extends ConsumerState<SyncWebdavCard> {
     if (_isBusy) return;
     FocusManager.instance.primaryFocus?.unfocus();
     setState(() => _busyAction = tag);
+    widget.onBusyChanged?.call(true);
     try {
       await task();
     } on WebdavSyncException catch (e) {
@@ -76,6 +87,7 @@ class _SyncWebdavCardState extends ConsumerState<SyncWebdavCard> {
     } catch (e) {
       if (mounted) AppFeedback.showToast(context, '云同步执行失败：$e', isError: true);
     } finally {
+      widget.onBusyChanged?.call(false);
       if (mounted) setState(() => _busyAction = null);
     }
   }
@@ -96,12 +108,20 @@ class _SyncWebdavCardState extends ConsumerState<SyncWebdavCard> {
         final db = ref.read(appDatabaseProvider);
         final cfg = _currentConfig();
         await WebdavSyncClient.saveConfig(db, cfg);
-        final json = await ref.read(backupSnapshotCodecProvider).exportSnapshotJson();
-        await WebdavSyncClient(config: cfg).uploadBackup(json);
+        final res = await WebdavSyncCoordinator.uploadWithPreMerge(
+          client: WebdavSyncClient(config: cfg),
+          codec: ref.read(backupSnapshotCodecProvider),
+        );
         final now = await WebdavSyncClient.markSyncedNow(db);
+        if (res.mergedFromRemote) {
+          await widget.onPreferencesUpdated?.call();
+        }
         if (!mounted) return;
         setState(() => _lastSyncAt = now);
-        AppFeedback.showToast(context, '已上传全量备份快照至云端');
+        AppFeedback.showToast(
+          context,
+          res.mergedFromRemote ? '已先合并云端增量并上传最新快照' : '已上传全量备份快照至云端',
+        );
       });
 
   Future<void> _downloadAndMerge() => _runAction('download', () async {
