@@ -1,45 +1,9 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'host_bridge_models.dart';
 
-/// 宿主平台原生能力快照
-@immutable
-class HostCapabilities {
-  const HostCapabilities({
-    required this.platform,
-    required this.supportsVolumeKeyPaging,
-    required this.versionName,
-    required this.versionCode,
-  });
-
-  final String platform;
-  final bool supportsVolumeKeyPaging;
-  final String versionName;
-  final int versionCode;
-
-  static const fallback = HostCapabilities(
-    platform: 'unknown',
-    supportsVolumeKeyPaging: false,
-    versionName: '1.0.0',
-    versionCode: 1,
-  );
-}
-
-enum VolumeKeyEvent { up, down }
-
-/// 原生文档选择器返回的本地书籍文件描述
-@immutable
-class PickedBookFile {
-  const PickedBookFile({
-    required this.path,
-    required this.name,
-    required this.size,
-  });
-
-  final String path;
-  final String name;
-  final int size;
-}
+export 'host_bridge_models.dart';
 
 /// Android / iOS 双端统一原生桥接服务
 class HostBridge {
@@ -53,6 +17,8 @@ class HostBridge {
 
   final StreamController<VolumeKeyEvent> _volumeController =
       StreamController<VolumeKeyEvent>.broadcast();
+  final StreamController<MediaCommandAction> _mediaCommandController =
+      StreamController<MediaCommandAction>.broadcast();
   final StreamController<({String utteranceId, bool isError, String? message})>
       _ttsEventController = StreamController<
           ({String utteranceId, bool isError, String? message})>.broadcast();
@@ -62,6 +28,8 @@ class HostBridge {
 
   HostCapabilities get capabilities => _capabilities;
   Stream<VolumeKeyEvent> get volumeKeyStream => _volumeController.stream;
+  Stream<MediaCommandAction> get mediaCommandStream =>
+      _mediaCommandController.stream;
   Stream<({String utteranceId, bool isError, String? message})>
       get ttsEventStream => _ttsEventController.stream;
 
@@ -74,6 +42,13 @@ class HostBridge {
         return true;
       case 'onVolumeUp':
         _volumeController.add(VolumeKeyEvent.up);
+        return true;
+      case 'onMediaCommand':
+        final action = MediaCommandAction.fromWireName(
+          map['action'] as String?,
+        );
+        if (action == null) return false;
+        _mediaCommandController.add(action);
         return true;
       case 'onTtsDone':
         _ttsEventController.add((
@@ -139,11 +114,18 @@ class HostBridge {
   }
 
   /// 调起双端原生文档选择器选取本地书籍（TXT / EPUB），取消或无返回值则返回 null
-  Future<PickedBookFile?> pickLocalBookFile() async {
+  Future<PickedBookFile?> pickLocalBookFile() {
+    return _pickFileViaMethod('pickLocalBookFile');
+  }
+
+  /// 调起双端原生文档选择器选取自定义字体（TTF / OTF），取消或无返回值则返回 null
+  Future<PickedBookFile?> pickFontFile() {
+    return _pickFileViaMethod('pickFontFile');
+  }
+
+  Future<PickedBookFile?> _pickFileViaMethod(String method) async {
     try {
-      final raw = await _channel.invokeMapMethod<String, dynamic>(
-        'pickLocalBookFile',
-      );
+      final raw = await _channel.invokeMapMethod<String, dynamic>(method);
       if (raw == null) return null;
       final path = (raw['path'] as String?)?.trim() ?? '';
       if (path.isEmpty) return null;
@@ -166,36 +148,45 @@ class HostBridge {
     required String text,
     required String utteranceId,
     double rate = 1.0,
-  }) async {
-    try {
-      final ok = await _channel.invokeMethod<bool>('ttsSpeak', {
-        'text': text,
-        'utteranceId': utteranceId,
-        'rate': rate,
-      });
-      return ok ?? false;
-    } on MissingPluginException {
-      return false;
-    } on PlatformException {
-      return false;
-    }
+  }) {
+    return _invokeBool('ttsSpeak', {
+      'text': text,
+      'utteranceId': utteranceId,
+      'rate': rate,
+    });
   }
 
   /// 停止当前原生 TTS 朗读
-  Future<bool> ttsStop() async {
-    try {
-      return (await _channel.invokeMethod<bool>('ttsStop')) ?? false;
-    } on MissingPluginException {
-      return false;
-    } on PlatformException {
-      return false;
-    }
-  }
+  Future<bool> ttsStop() => _invokeBool('ttsStop');
 
   /// 查询当前宿主原生 TTS 引擎是否可用
-  Future<bool> ttsIsAvailable() async {
+  Future<bool> ttsIsAvailable() => _invokeBool('ttsIsAvailable');
+
+  /// 更新双端原生系统媒体会话与锁屏/通知栏控制卡片
+  Future<bool> updateMediaSession({
+    required String bookTitle,
+    required String author,
+    required String chapterTitle,
+    required bool isPlaying,
+    required bool canPrev,
+    required bool canNext,
+  }) {
+    return _invokeBool('updateMediaSession', {
+      'bookTitle': bookTitle,
+      'author': author,
+      'chapterTitle': chapterTitle,
+      'isPlaying': isPlaying,
+      'canPrev': canPrev,
+      'canNext': canNext,
+    });
+  }
+
+  /// 清除系统媒体会话并关闭后台播放前台服务
+  Future<bool> clearMediaSession() => _invokeBool('clearMediaSession');
+
+  Future<bool> _invokeBool(String method, [Map<String, dynamic>? args]) async {
     try {
-      return (await _channel.invokeMethod<bool>('ttsIsAvailable')) ?? false;
+      return (await _channel.invokeMethod<bool>(method, args)) ?? false;
     } on MissingPluginException {
       return false;
     } on PlatformException {
@@ -273,15 +264,6 @@ class HostBridge {
         uri.host.isEmpty) {
       return false;
     }
-    try {
-      return (await _channel.invokeMethod<bool>('openExternalUrl', {
-            'url': trimmed,
-          })) ??
-          false;
-    } on MissingPluginException {
-      return false;
-    } on PlatformException {
-      return false;
-    }
+    return _invokeBool('openExternalUrl', {'url': trimmed});
   }
 }

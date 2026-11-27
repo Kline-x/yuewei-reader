@@ -5,6 +5,8 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.provider.OpenableColumns
 import android.view.KeyEvent
 import android.view.WindowManager
@@ -20,16 +22,54 @@ import java.util.concurrent.Executors
  * 严格践行受控音量键拦截：默认放行系统调音，仅阅读界面主动开启后才捕获上下键。
  */
 class MainActivity : FlutterActivity() {
+    companion object {
+        private const val MAX_FONT_FILE_BYTES = 30L * 1024L * 1024L
+        private val mainHandler = Handler(Looper.getMainLooper())
+
+        @Volatile
+        private var activeBridgeToken: Any? = null
+
+        @Volatile
+        private var mediaCommandBridge: ((String) -> Unit)? = null
+
+        fun registerMediaCommandBridge(token: Any, listener: (String) -> Unit) {
+            activeBridgeToken = token
+            mediaCommandBridge = listener
+        }
+
+        fun unregisterMediaCommandBridge(token: Any) {
+            if (activeBridgeToken === token) {
+                activeBridgeToken = null
+                mediaCommandBridge = null
+            }
+        }
+
+        fun dispatchMediaCommand(action: String) {
+            mainHandler.post {
+                mediaCommandBridge?.invoke(action)
+            }
+        }
+    }
+
     private val channelName = "com.kline.yuewei/host_bridge"
     private val pickBookRequestCode = 9501
+    private val pickFontRequestCode = 9504
     private var hostChannel: MethodChannel? = null
+    private val bridgeToken = Any()
     private var pendingFilePickerResult: MethodChannel.Result? = null
+    private var pendingFontPickerResult: MethodChannel.Result? = null
     private val ioExecutor = Executors.newSingleThreadExecutor()
     private var ttsAndBackupHelper: NativeTtsAndBackupHelper? = null
     private var appUpdateHelper: NativeAppUpdateHelper? = null
 
     @Volatile
     private var volumeKeyInterceptEnabled: Boolean = false
+
+    private fun isAnyPickerBusy(helper: NativeTtsAndBackupHelper?): Boolean {
+        return pendingFilePickerResult != null ||
+            pendingFontPickerResult != null ||
+            (helper?.isBusy == true)
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -41,6 +81,13 @@ class MainActivity : FlutterActivity() {
         val updateHelper = NativeAppUpdateHelper(this, ioExecutor)
         ttsAndBackupHelper = helper
         appUpdateHelper = updateHelper
+
+        registerMediaCommandBridge(bridgeToken) { action ->
+            if (hostChannel === channel && !isFinishing && !isDestroyed) {
+                channel.invokeMethod("onMediaCommand", mapOf("action" to action))
+            }
+        }
+
         channel.setMethodCallHandler { call, result ->
             when (call.method) {
                 "getHostCapabilities" -> {
@@ -87,7 +134,7 @@ class MainActivity : FlutterActivity() {
                 }
 
                 "pickLocalBookFile" -> {
-                    if (pendingFilePickerResult != null || helper.isBusy) {
+                    if (isAnyPickerBusy(helper)) {
                         result.error("PICKER_BUSY", "已有文件选择请求正在进行", null)
                         return@setMethodCallHandler
                     }
@@ -113,6 +160,37 @@ class MainActivity : FlutterActivity() {
                     }
                 }
 
+                "pickFontFile" -> {
+                    if (isAnyPickerBusy(helper)) {
+                        result.error("PICKER_BUSY", "已有文件选择请求正在进行", null)
+                        return@setMethodCallHandler
+                    }
+                    val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "*/*"
+                        putExtra(
+                            Intent.EXTRA_MIME_TYPES,
+                            arrayOf(
+                                "font/ttf",
+                                "font/otf",
+                                "font/sfnt",
+                                "application/x-font-ttf",
+                                "application/x-font-opentype",
+                                "application/font-sfnt",
+                                "application/octet-stream"
+                            )
+                        )
+                    }
+                    pendingFontPickerResult = result
+                    try {
+                        @Suppress("DEPRECATION")
+                        startActivityForResult(intent, pickFontRequestCode)
+                    } catch (e: Exception) {
+                        pendingFontPickerResult = null
+                        result.error("PICKER_UNAVAILABLE", e.message ?: "无法打开字体选择器", null)
+                    }
+                }
+
                 "ttsSpeak" -> {
                     val text = call.argument<String>("text") ?: ""
                     val utteranceId = call.argument<String>("utteranceId") ?: ""
@@ -124,20 +202,43 @@ class MainActivity : FlutterActivity() {
 
                 "ttsIsAvailable" -> helper.ttsIsAvailable(result)
 
+                "updateMediaSession" -> {
+                    val bookTitle = call.argument<String>("bookTitle") ?: ""
+                    val author = call.argument<String>("author") ?: ""
+                    val chapterTitle = call.argument<String>("chapterTitle") ?: ""
+                    val isPlaying = call.argument<Boolean>("isPlaying") == true
+                    val canPrev = call.argument<Boolean>("canPrev") == true
+                    val canNext = call.argument<Boolean>("canNext") == true
+                    val ok = TtsForegroundService.startOrUpdate(
+                        context = this,
+                        bookTitle = bookTitle,
+                        author = author,
+                        chapterTitle = chapterTitle,
+                        isPlaying = isPlaying,
+                        canPrev = canPrev,
+                        canNext = canNext
+                    )
+                    result.success(ok)
+                }
+
+                "clearMediaSession" -> {
+                    result.success(TtsForegroundService.stop(this))
+                }
+
                 "exportTextFile" -> {
                     val fileName = call.argument<String>("fileName") ?: "yuewei_backup.json"
                     val content = call.argument<String>("content") ?: ""
                     helper.exportTextFile(
                         fileName = fileName,
                         content = content,
-                        isHostBusy = pendingFilePickerResult != null,
+                        isHostBusy = pendingFilePickerResult != null || pendingFontPickerResult != null,
                         result = result
                     )
                 }
 
                 "pickAndReadTextFile" -> {
                     helper.pickAndReadTextFile(
-                        isHostBusy = pendingFilePickerResult != null,
+                        isHostBusy = pendingFilePickerResult != null || pendingFontPickerResult != null,
                         result = result
                     )
                 }
@@ -167,15 +268,50 @@ class MainActivity : FlutterActivity() {
         if (ttsAndBackupHelper?.onActivityResult(requestCode, resultCode, data) == true) {
             return
         }
-        if (requestCode != pickBookRequestCode) {
-            @Suppress("DEPRECATION")
-            super.onActivityResult(requestCode, resultCode, data)
-            return
+        when (requestCode) {
+            pickBookRequestCode -> {
+                val pending = pendingFilePickerResult
+                pendingFilePickerResult = null
+                if (pending != null) {
+                    copyPickedUriToCache(
+                        resultCode = resultCode,
+                        data = data,
+                        pending = pending,
+                        targetSubDir = "picked_books",
+                        maxBytes = null,
+                        isFontPicker = false
+                    )
+                }
+            }
+            pickFontRequestCode -> {
+                val pending = pendingFontPickerResult
+                pendingFontPickerResult = null
+                if (pending != null) {
+                    copyPickedUriToCache(
+                        resultCode = resultCode,
+                        data = data,
+                        pending = pending,
+                        targetSubDir = "picked_fonts",
+                        maxBytes = MAX_FONT_FILE_BYTES,
+                        isFontPicker = true
+                    )
+                }
+            }
+            else -> {
+                @Suppress("DEPRECATION")
+                super.onActivityResult(requestCode, resultCode, data)
+            }
         }
-        val pending = pendingFilePickerResult
-        pendingFilePickerResult = null
-        if (pending == null) return
+    }
 
+    private fun copyPickedUriToCache(
+        resultCode: Int,
+        data: Intent?,
+        pending: MethodChannel.Result,
+        targetSubDir: String,
+        maxBytes: Long?,
+        isFontPicker: Boolean
+    ) {
         val uri = data?.data
         if (resultCode != Activity.RESULT_OK || uri == null) {
             pending.success(null)
@@ -185,11 +321,18 @@ class MainActivity : FlutterActivity() {
         ioExecutor.execute {
             var destFile: File? = null
             try {
-                val displayName = resolveDisplayName(uri)
-                val targetDir = File(cacheDir, "picked_books").apply { mkdirs() }
-                val safeName = sanitizePickedFileName(displayName, uri)
+                if (maxBytes != null) {
+                    val knownSize = resolveFileSize(uri)
+                    if (knownSize > maxBytes) {
+                        throw IllegalArgumentException("字体文件体积超过 30MB 安全上限")
+                    }
+                }
+                val displayName = resolveDisplayName(uri, isFontPicker)
+                val targetDir = File(cacheDir, targetSubDir).apply { mkdirs() }
+                val safeName = sanitizePickedFileName(displayName, uri, isFontPicker)
                 val candidate = File(targetDir, "${System.currentTimeMillis()}_$safeName")
-                val targetPrefix = targetDir.canonicalPath.trimEnd(File.separatorChar) + File.separator
+                val targetPrefix =
+                    targetDir.canonicalPath.trimEnd(File.separatorChar) + File.separator
                 if (!candidate.canonicalPath.startsWith(targetPrefix)) {
                     throw SecurityException("非法目标文件路径")
                 }
@@ -197,9 +340,14 @@ class MainActivity : FlutterActivity() {
                 contentResolver.openInputStream(uri)?.use { input ->
                     FileOutputStream(candidate).use { output ->
                         val buffer = ByteArray(16 * 1024)
+                        var total = 0L
                         while (true) {
                             val count = input.read(buffer)
                             if (count <= 0) break
+                            total += count
+                            if (maxBytes != null && total > maxBytes) {
+                                throw IllegalArgumentException("字体文件体积超过 30MB 安全上限")
+                            }
                             output.write(buffer, 0, count)
                         }
                         output.flush()
@@ -230,7 +378,7 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun resolveDisplayName(uri: Uri): String {
+    private fun resolveDisplayName(uri: Uri, isFontPicker: Boolean): String {
         contentResolver.query(
             uri,
             arrayOf(OpenableColumns.DISPLAY_NAME),
@@ -247,20 +395,57 @@ class MainActivity : FlutterActivity() {
             }
         }
         val seg = uri.lastPathSegment?.substringAfterLast('/')?.trim()
-        return if (!seg.isNullOrEmpty()) seg else "book_${System.currentTimeMillis()}.txt"
+        if (!seg.isNullOrEmpty()) return seg
+        return if (isFontPicker) {
+            "font_${System.currentTimeMillis()}.ttf"
+        } else {
+            "book_${System.currentTimeMillis()}.txt"
+        }
     }
 
-    private fun sanitizePickedFileName(rawName: String, uri: Uri): String {
+    private fun resolveFileSize(uri: Uri): Long {
+        contentResolver.query(
+            uri,
+            arrayOf(OpenableColumns.SIZE),
+            null,
+            null,
+            null
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val idx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                if (idx >= 0 && !cursor.isNull(idx)) {
+                    return cursor.getLong(idx)
+                }
+            }
+        }
+        return -1L
+    }
+
+    private fun sanitizePickedFileName(
+        rawName: String,
+        uri: Uri,
+        isFontPicker: Boolean
+    ): String {
         val base = rawName.substringAfterLast('/').substringAfterLast('\\').trim()
         var safe = base.replace(Regex("[^a-zA-Z0-9._\\-\\u4E00-\\u9FFF]"), "_")
             .replace(Regex("^\\.+"), "")
-        if (safe.isEmpty()) safe = "book"
+        if (safe.isEmpty()) {
+            safe = if (isFontPicker) "font" else "book"
+        }
         if (!safe.contains('.')) {
             val mime = contentResolver.getType(uri)?.lowercase() ?: ""
-            if (mime.contains("epub")) {
-                safe += ".epub"
-            } else if (mime.contains("text")) {
-                safe += ".txt"
+            if (isFontPicker) {
+                safe += if (mime.contains("otf") || mime.contains("opentype")) {
+                    ".otf"
+                } else {
+                    ".ttf"
+                }
+            } else {
+                if (mime.contains("epub")) {
+                    safe += ".epub"
+                } else if (mime.contains("text")) {
+                    safe += ".txt"
+                }
             }
         }
         return safe
@@ -291,8 +476,11 @@ class MainActivity : FlutterActivity() {
 
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
         volumeKeyInterceptEnabled = false
+        unregisterMediaCommandBridge(bridgeToken)
         pendingFilePickerResult?.success(null)
         pendingFilePickerResult = null
+        pendingFontPickerResult?.success(null)
+        pendingFontPickerResult = null
         hostChannel?.setMethodCallHandler(null)
         hostChannel = null
         ttsAndBackupHelper?.shutdown()
@@ -304,8 +492,11 @@ class MainActivity : FlutterActivity() {
 
     override fun onDestroy() {
         volumeKeyInterceptEnabled = false
+        unregisterMediaCommandBridge(bridgeToken)
         pendingFilePickerResult?.success(null)
         pendingFilePickerResult = null
+        pendingFontPickerResult?.success(null)
+        pendingFontPickerResult = null
         ttsAndBackupHelper?.shutdown()
         ttsAndBackupHelper = null
         appUpdateHelper?.shutdown()

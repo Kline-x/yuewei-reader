@@ -1,5 +1,6 @@
 import AVFoundation
 import Flutter
+import MediaPlayer
 import UIKit
 import UniformTypeIdentifiers
 
@@ -9,6 +10,7 @@ import UniformTypeIdentifiers
 {
   fileprivate enum PickerOperation {
     case pickLocalBook
+    case pickFontFile
     case exportTextFile(tempURL: URL, fallbackName: String)
     case pickTextFile
   }
@@ -18,6 +20,7 @@ import UniformTypeIdentifiers
 
   fileprivate var hostChannel: FlutterMethodChannel?
   fileprivate var pendingBookPickerResult: FlutterResult?
+  fileprivate var pendingFontPickerResult: FlutterResult?
   fileprivate var pendingExportPickerResult: FlutterResult?
   fileprivate var pendingTextPickerResult: FlutterResult?
   fileprivate weak var activePickerController: UIDocumentPickerViewController?
@@ -31,6 +34,8 @@ import UniformTypeIdentifiers
   fileprivate var activeUtterance: AVSpeechUtterance?
   fileprivate var activeUtteranceId: String?
   fileprivate var audioInterruptionObserverRegistered: Bool = false
+  fileprivate var mediaCommandsRegistered: Bool = false
+  fileprivate var mediaCommandTargets: [(command: MPRemoteCommand, target: Any)] = []
 
   deinit {
     if audioInterruptionObserverRegistered {
@@ -41,10 +46,13 @@ import UniformTypeIdentifiers
       )
       audioInterruptionObserverRegistered = false
     }
+    removeRemoteCommandTargets()
+    MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
   }
 
   fileprivate var isAnyPickerBusy: Bool {
     return pendingBookPickerResult != nil
+      || pendingFontPickerResult != nil
       || pendingExportPickerResult != nil
       || pendingTextPickerResult != nil
   }
@@ -97,6 +105,9 @@ import UniformTypeIdentifiers
       case "pickLocalBookFile":
         self.presentBookPicker(result: result)
 
+      case "pickFontFile":
+        self.presentFontPicker(result: result)
+
       case "ttsSpeak":
         self.handleTtsSpeak(call: call, result: result)
 
@@ -105,6 +116,12 @@ import UniformTypeIdentifiers
 
       case "ttsIsAvailable":
         result(true)
+
+      case "updateMediaSession":
+        self.handleUpdateMediaSession(call: call, result: result)
+
+      case "clearMediaSession":
+        self.handleClearMediaSession(result: result)
 
       case "exportTextFile":
         self.presentExportTextPicker(call: call, result: result)
@@ -211,6 +228,55 @@ import UniformTypeIdentifiers
     }
   }
 
+  private func presentFontPicker(result: @escaping FlutterResult) {
+    DispatchQueue.main.async { [weak self] in
+      guard let self = self else {
+        result(FlutterError(code: "DEALLOCATED", message: "AppDelegate unavailable", details: nil))
+        return
+      }
+      if self.isAnyPickerBusy {
+        result(FlutterError(code: "PICKER_BUSY", message: "已有文件选择请求正在进行", details: nil))
+        return
+      }
+      guard
+        let presenter = self.topViewController(),
+        !presenter.isBeingDismissed,
+        presenter.presentedViewController == nil
+      else {
+        result(FlutterError(code: "NO_VIEW_CONTROLLER", message: "未找到可用界面上下文", details: nil))
+        return
+      }
+      self.pendingFontPickerResult = result
+      self.activePickerOperation = .pickFontFile
+
+      let picker: UIDocumentPickerViewController
+      if #available(iOS 14.0, *) {
+        var types: [UTType] = [.font]
+        if let ttf = UTType("public.truetype-ttf-font") ?? UTType(filenameExtension: "ttf") {
+          types.append(ttf)
+        }
+        if let otf = UTType("public.opentype-font") ?? UTType(filenameExtension: "otf") {
+          types.append(otf)
+        }
+        types.append(.data)
+        picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
+      } else {
+        let legacyTypes = [
+          "public.font",
+          "public.truetype-ttf-font",
+          "public.opentype-font",
+          "public.data",
+        ]
+        picker = UIDocumentPickerViewController(documentTypes: legacyTypes, in: .import)
+      }
+      picker.delegate = self
+      picker.allowsMultipleSelection = false
+      picker.presentationController?.delegate = self
+      self.activePickerController = picker
+      presenter.present(picker, animated: true)
+    }
+  }
+
   func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
     guard let active = activePickerController, controller === active else {
       return
@@ -240,6 +306,10 @@ import UniformTypeIdentifiers
       pendingBookPickerResult = nil
       pending(nil)
     }
+    if let pending = pendingFontPickerResult {
+      pendingFontPickerResult = nil
+      pending(nil)
+    }
     if let pending = pendingExportPickerResult {
       pendingExportPickerResult = nil
       pending(nil)
@@ -267,6 +337,12 @@ import UniformTypeIdentifiers
       pendingBookPickerResult = nil
       guard let pending = pending else { return }
       handlePickedLocalBook(urls: urls, pending: pending)
+
+    case .pickFontFile:
+      let pending = pendingFontPickerResult
+      pendingFontPickerResult = nil
+      guard let pending = pending else { return }
+      handlePickedFontFile(urls: urls, pending: pending)
 
     case .exportTextFile(let tempURL, let fallbackName):
       let pending = pendingExportPickerResult
@@ -349,6 +425,105 @@ import UniformTypeIdentifiers
     }
   }
 
+  private func handlePickedFontFile(urls: [URL], pending: @escaping FlutterResult) {
+    guard let url = urls.first else {
+      pending(nil)
+      return
+    }
+    DispatchQueue.global(qos: .userInitiated).async {
+      let scoped = url.startAccessingSecurityScopedResource()
+      defer {
+        if scoped {
+          url.stopAccessingSecurityScopedResource()
+        }
+      }
+      var destURL: URL?
+      do {
+        let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
+        if let fileSize = (attrs[.size] as? NSNumber)?.intValue,
+          fileSize > AppDelegate.maxTextFileBytes
+        {
+          throw NSError(
+            domain: "YueweiPicker",
+            code: -2,
+            userInfo: [NSLocalizedDescriptionKey: "字体文件体积超过 30MB 安全上限"]
+          )
+        }
+
+        let targetDir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+          .appendingPathComponent("picked_fonts", isDirectory: true)
+        try FileManager.default.createDirectory(at: targetDir, withIntermediateDirectories: true)
+
+        let rawName = url.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayName = rawName.isEmpty ? "font.ttf" : rawName
+        let safeName = AppDelegate.sanitizePickedFileName(displayName, fallback: "font.ttf")
+        let stamp = Int64(Date().timeIntervalSince1970 * 1000)
+        let candidate = targetDir.appendingPathComponent("\(stamp)_\(safeName)")
+
+        guard
+          candidate.standardizedFileURL.deletingLastPathComponent() == targetDir.standardizedFileURL
+        else {
+          throw NSError(
+            domain: "YueweiPicker",
+            code: -1,
+            userInfo: [NSLocalizedDescriptionKey: "非法目标文件路径"]
+          )
+        }
+        if FileManager.default.fileExists(atPath: candidate.path) {
+          try FileManager.default.removeItem(at: candidate)
+        }
+        guard FileManager.default.createFile(atPath: candidate.path, contents: nil) else {
+          throw NSError(
+            domain: "YueweiPicker",
+            code: -4,
+            userInfo: [NSLocalizedDescriptionKey: "无法创建目标字体缓存文件"]
+          )
+        }
+        destURL = candidate
+
+        let reader = try FileHandle(forReadingFrom: url)
+        defer { try? reader.close() }
+        let writer = try FileHandle(forWritingTo: candidate)
+        defer { try? writer.close() }
+
+        var totalBytes = 0
+        while true {
+          guard let chunk = try reader.read(upToCount: 64 * 1024), !chunk.isEmpty else {
+            break
+          }
+          totalBytes += chunk.count
+          if totalBytes > AppDelegate.maxTextFileBytes {
+            throw NSError(
+              domain: "YueweiPicker",
+              code: -2,
+              userInfo: [NSLocalizedDescriptionKey: "字体文件体积超过 30MB 安全上限"]
+            )
+          }
+          try writer.write(contentsOf: chunk)
+        }
+        try writer.synchronize()
+
+        let payload: [String: Any] = [
+          "path": candidate.path,
+          "name": displayName,
+          "size": totalBytes,
+        ]
+        DispatchQueue.main.async {
+          pending(payload)
+        }
+      } catch {
+        if let created = destURL {
+          try? FileManager.default.removeItem(at: created)
+        }
+        DispatchQueue.main.async {
+          pending(
+            FlutterError(code: "COPY_FAILED", message: error.localizedDescription, details: nil)
+          )
+        }
+      }
+    }
+  }
+
   fileprivate static func sanitizePickedFileName(_ rawName: String, fallback: String) -> String {
     let base = (rawName as NSString).lastPathComponent
     let cleaned = base.replacingOccurrences(
@@ -361,6 +536,109 @@ import UniformTypeIdentifiers
       options: .regularExpression
     )
     return cleaned.isEmpty ? fallback : cleaned
+  }
+}
+
+// MARK: - Media Control
+extension AppDelegate {
+  fileprivate func handleUpdateMediaSession(
+    call: FlutterMethodCall,
+    result: @escaping FlutterResult
+  ) {
+    let args = call.arguments as? [String: Any]
+    let bookTitle = ((args?["bookTitle"] as? String) ?? "")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let author = ((args?["author"] as? String) ?? "")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let chapterTitle = ((args?["chapterTitle"] as? String) ?? "")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let isPlaying = (args?["isPlaying"] as? Bool) ?? false
+    let canPrev = (args?["canPrev"] as? Bool) ?? false
+    let canNext = (args?["canNext"] as? Bool) ?? false
+
+    DispatchQueue.main.async { [weak self] in
+      guard let self = self else {
+        result(false)
+        return
+      }
+      self.registerRemoteCommandsIfNeeded()
+      let center = MPRemoteCommandCenter.shared()
+      center.playCommand.isEnabled = true
+      center.pauseCommand.isEnabled = true
+      center.togglePlayPauseCommand.isEnabled = true
+      center.previousTrackCommand.isEnabled = canPrev
+      center.nextTrackCommand.isEnabled = canNext
+
+      let resolvedBook = bookTitle.isEmpty ? "阅微听书" : bookTitle
+      let resolvedTitle = chapterTitle.isEmpty ? resolvedBook : chapterTitle
+      var nowPlaying: [String: Any] = [
+        MPMediaItemPropertyTitle: resolvedTitle,
+        MPMediaItemPropertyAlbumTitle: resolvedBook,
+        MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0,
+      ]
+      if !author.isEmpty {
+        nowPlaying[MPMediaItemPropertyArtist] = author
+      }
+      MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlaying
+      if #available(iOS 13.0, *) {
+        MPNowPlayingInfoCenter.default().playbackState = isPlaying ? .playing : .paused
+      }
+      UIApplication.shared.beginReceivingRemoteControlEvents()
+      result(true)
+    }
+  }
+
+  fileprivate func handleClearMediaSession(result: @escaping FlutterResult) {
+    DispatchQueue.main.async { [weak self] in
+      guard let self = self else {
+        result(false)
+        return
+      }
+      self.clearMediaSessionState()
+      result(true)
+    }
+  }
+
+  fileprivate func registerRemoteCommandsIfNeeded() {
+    guard !mediaCommandsRegistered else { return }
+    let center = MPRemoteCommandCenter.shared()
+    let bindings: [(MPRemoteCommand, String)] = [
+      (center.playCommand, "play"),
+      (center.pauseCommand, "pause"),
+      (center.togglePlayPauseCommand, "toggle"),
+      (center.nextTrackCommand, "next"),
+      (center.previousTrackCommand, "prev"),
+    ]
+    for (command, actionName) in bindings {
+      command.isEnabled = true
+      let target = command.addTarget { [weak self] _ in
+        guard let self = self else { return .commandFailed }
+        DispatchQueue.main.async {
+          self.hostChannel?.invokeMethod("onMediaCommand", arguments: ["action": actionName])
+        }
+        return .success
+      }
+      mediaCommandTargets.append((command: command, target: target))
+    }
+    mediaCommandsRegistered = true
+  }
+
+  fileprivate func removeRemoteCommandTargets() {
+    for entry in mediaCommandTargets {
+      entry.command.removeTarget(entry.target)
+      entry.command.isEnabled = false
+    }
+    mediaCommandTargets.removeAll()
+    mediaCommandsRegistered = false
+  }
+
+  fileprivate func clearMediaSessionState() {
+    removeRemoteCommandTargets()
+    MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+    if #available(iOS 13.0, *) {
+      MPNowPlayingInfoCenter.default().playbackState = .stopped
+    }
+    UIApplication.shared.endReceivingRemoteControlEvents()
   }
 }
 
@@ -495,6 +773,7 @@ extension AppDelegate: AVSpeechSynthesizerDelegate {
       )
       audioInterruptionObserverRegistered = false
     }
+    clearMediaSessionState()
     activeUtterance = nil
     activeUtteranceId = nil
     if speechSynthesizer.isSpeaking || speechSynthesizer.isPaused {
