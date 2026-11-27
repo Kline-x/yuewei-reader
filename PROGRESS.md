@@ -12,6 +12,7 @@
 | **M2** | `dc8469f` | 已完成 | 本地 TXT/EPUB、18680 Wi-Fi 传书、书签与全文搜书 | `48/48` 测试全绿 · 三轮真机 E2E 闭环 |
 | **M3** | `f1e753e` | 已完成 | 双端 TTS 听书、WebDAV 云同步、12 组书源扩充 | `64/64` 测试 · `0` analyze issues · 最大 `348` 行 · K60 三轮零缺陷 |
 | **M4** | `6f8c79e` | 已完成 | 仓库门面、治理文档体系、GitHub Actions CI/CD 与 iOS 对等核验 | CI Run `#45515717930` 全绿（门禁单测 + Android APK + `macos-latest` iOS 无签名构建）· `v1.0.0` 发版就绪 |
+| **M5** | `v1.0.1` | 已完成 | 24 项全量加固、v4 索引升级与 GitHub Release 应用内在线更新 | `78/78` 测试 · `0` analyze issues · `131` 文件最大 `348` 行 · K60 两轮零缺陷 |
 
 ---
 
@@ -58,3 +59,19 @@
     - `ios/Runner/Info.plist` 已配置 `NSAllowsArbitraryLoads = true` 与 `NSLocalNetworkUsageDescription`，12 组内置书源（含 10 组 `http://`）与 `com.kline.yuewei/host_bridge` 双端通道（9 个宿主方法与 `AVSpeechSynthesizer` / `UIDocumentPicker`）完全对等。
     - 后续 P2 温和优化备忘（不阻塞编译与主流程）：高倍速 TTS 语速曲线平缓化、`pickLocalBookFile` 临时副本清理、以及面向 Swift 6 严格并发的注解前瞻。
   - [x] 正式发版：推送 `v1.0.0` Tag 触发 GitHub Release 自动附带 `app-release.apk` 与 `.sha256` 校验产物。
+
+### M5 — 全量质量加固与 GitHub Release 应用内在线更新 (`1.0.1+2` / `v1.0.1`)
+- **核心交付**：
+  - **24 项全链路缺陷清零**：
+    - **数据与同步加固**：同源刷新/前部插章经临时中转目录安全迁移磁盘章节缓存，保留既有 `isCached`/`cachedBytes`；Drift 数据库升至 `schemaVersion = 4` 新增 `idx_bookmarks_book_id` 与 `idx_reading_sessions_date_key` 索引并修复跨午夜计时；`WebdavSyncClient` 支持非 GET 最多 5 跳重定向（跨主机/HTTPS 降级自动剥离凭证）、`If-Match` ETag 乐观并发控制与上传前先拉取 LWW 无损合并；本地导入书隔离清理、封面 `local_cover://` 相对路径兼容与 `DownloadManager` 世代守卫。
+    - **网络解码、书源引擎与安全传书**：`RuleEvaluator` 与 `ContentPipeline` 优先剥离 `<script>/<style>/<noscript>` 并修正 HTML 实体解码顺序，新增 `##regex##replacement` 与 `||` 备选回退；目录（`<= 30` 页）与正文（`<= 15` 页）分页防环、GBK POST 安全编码及 302 详情直解；`WifiTransferServer` 移除宽泛 CORS，新增 4 位随机数字配对码鉴权（`?token=` / `x-access-token`）与退页自动停服；补充求书网新版详情页站方 SEO 广告套话净洗规则。
+    - **阅读器、TTS 与双端原生防崩**：统一 `TypographyEngine.measureHeadingHeight` 与 `PagePainter` 1:1 实测双行章标题高度彻底消除压字；修复仿真反向回拖反悔误翻页、菜单拦截防穿透与连续滚动调字号零误差重锚定；超长段 TTS 安全切分、暂停冻结睡眠计时、音频焦点/系统来电中断派发 `onTtsError`；iOS `FileHandle.read(upToCount:)` 防 NSException 闪退、新增 `UIBackgroundModes (audio)` 与非对称语速曲线校准。
+  - **GitHub Release 应用内在线更新（零新增依赖）**：
+    - 新增 `lib/features/update/` 模块实现语义化版本比较、启动静默每日一次节流检查、忽略版本持久化、设置页手动检查入口与 Modern Soft UI v4 风格更新弹窗。
+    - 双端 `HostBridge` 对等新增 `installApk` 与 `openExternalUrl`（11 个宿主方法）；Android 端拆分 `NativeAppUpdateHelper.kt`，基于 `FileProvider`（`cache/yuewei_updates/`）与 `REQUEST_INSTALL_PACKAGES` 实现流式下载、SHA-256 校验与系统安装器唤起，iOS 端安全跳转 Release 页面；同步完善 `build.gradle.kts` 与 CI 正式签名支持。
+- **实测门禁与构建指标**：
+  - 代码体积门禁：`lib/` 与 `test/` 共 **131 个**非生成 `.dart` 文件，**100% 严格 `<= 350` 行**（单文件最大 **348 行**，累计 **28,165 行**）。
+  - 静态分析：`flutter analyze` **0 issues**；`swiftc -parse ios/Runner/AppDelegate.swift` 与 `plutil -lint ios/Runner/Info.plist` 通过。
+  - 单元测试：`flutter test` **78/78**（14 个测试文件）全绿通过。
+  - Android Release 产物：`app-release.apk`（`arm64-v8a`，`1.0.1+2`）体积 **29,269,975 字节**，SHA-256：`efdf522d04a8a9e9348d9edc398dc245f0f90dead03c8782a223c61fa1b9fb5e`。
+  - 真机 E2E 回归（Redmi K60 `22ecd9e7`）：两轮真机扩大范围回归闭环，强杀冷启耗时 **894ms**（预热 **380ms**，二轮 `v1.0.1` **664ms**），求书网刷新净洗简介并保留 `7 / 1654 章 (64.7 KB)` 缓存、设置页展示 `v1.0.1 (2)` 并实网校验最新、Wi-Fi 传书 401 鉴权与退页自动停服、双行标题与五模式/连续滚动重锚定、TTS 音量键释放全链路实测通过，`logcat` 全程零应用级崩溃与异常。

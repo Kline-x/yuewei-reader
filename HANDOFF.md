@@ -14,7 +14,7 @@
 | **历史隔离说明** | `/Users/yang/Documents/code/vibCoding/novel_reader_flutter` 为历史独立仓库，**严禁在本项目任务中修改或写入** |
 | **Flutter 版本** | `3.47.4` (`stable` channel) |
 | **Dart SDK 约束** | `^3.13.3` |
-| **应用版本** | `1.0.0+1` (`pubspec.yaml`) |
+| **应用版本** | `1.0.1+2` (`pubspec.yaml`) |
 | **Android 标识** | `applicationId = "com.kline.yuewei"`、`namespace = "com.kline.yuewei_reader"`、`JavaVersion.VERSION_17` |
 | **iOS 标识** | `CFBundleDisplayName = "阅微"`、`IPHONEOS_DEPLOYMENT_TARGET = 15.0` |
 
@@ -37,7 +37,7 @@ lib/
 ├── core/
 │   ├── database/
 │   │   ├── tables.dart                        # Books, BookSources, Chapters, Bookmarks 等 8 张 Drift 表
-│   │   ├── app_database.dart                  # schemaVersion = 3（yuewei_v2_db），含 v1->v2->v3 平滑迁移
+│   │   ├── app_database.dart                  # schemaVersion = 4（yuewei_v2_db），含 v1->v2->v3->v4 平滑迁移与书签/计时索引
 │   │   ├── app_database.g.dart                # 唯一允许豁免 350 行红线的 Drift 生成文件
 │   │   └── bookmark_dao.dart                  # 书签查询与写入 DAO
 │   ├── network/                               # Dio 封装与 GBK/UTF-8 自适应解码
@@ -66,18 +66,22 @@ lib/
     │   └── presentation/                      # 本地导入与 Wi-Fi 传书界面
     ├── download/                              # 离线章节批量缓存管理器
     ├── tts/                                   # TtsController 状态机与 TtsControlSheet 播控面板
-    ├── sync/                                  # BackupSnapshotCodec (LWW 合并)、WebdavSyncClient 与同步页
-    └── settings/                              # 外观主题、阅读器设置与关于信息
+    ├── sync/                                  # BackupSnapshotCodec (LWW 合并)、WebdavSyncClient、协调器与同步页
+    ├── update/                                # GitHub Releases 在线更新检测、下载校验与弹窗
+    └── settings/                              # 外观主题、阅读器设置、检查更新与关于信息
 
 android/app/src/main/
-├── AndroidManifest.xml                        # 应用名 "阅微"、INTERNET 与 TTS_SERVICE 查询声明
-├── res/xml/network_security_config.xml        # 明文 HTTP 书源与局域网传书网络策略
+├── AndroidManifest.xml                        # 应用名 "阅微"、INTERNET/REQUEST_INSTALL_PACKAGES 与 FileProvider 声明
+├── res/xml/
+│   ├── network_security_config.xml            # 明文 HTTP 书源与局域网传书网络策略
+│   └── file_paths.xml                         # FileProvider cache/yuewei_updates/ 更新包安全路径声明
 └── kotlin/com/kline/yuewei_reader/
     ├── MainActivity.kt                        # FlutterActivity 宿主通道、文件选择器与物理音量键拦截
-    └── NativeTtsAndBackupHelper.kt            # Android TextToSpeech 与 SAF JSON 文件导入导出
+    ├── NativeTtsAndBackupHelper.kt            # Android TextToSpeech（音频焦点监听）与 SAF JSON 文件导入导出
+    └── NativeAppUpdateHelper.kt               # APK SHA-256 校验、未知来源权限引导与系统安装器/外链调起
 
 ios/Runner/
-├── Info.plist                                 # 品牌名 "阅微"、NSAllowsArbitraryLoads、NSLocalNetworkUsageDescription
+├── Info.plist                                 # 品牌名 "阅微"、ATS、本地网络说明与 UIBackgroundModes (audio)
 ├── AppDelegate.swift                          # FlutterMethodChannel、UIDocumentPicker、AVSpeechSynthesizer 封装
 └── Runner.xcodeproj/project.pbxproj           # IPHONEOS_DEPLOYMENT_TARGET = 15.0
 ```
@@ -102,7 +106,7 @@ ios/Runner/
 - `/reader/:bookId?chapter=<index>` — 沉浸阅读器页
 
 ### 双端原生方法通道 (`com.kline.yuewei/host_bridge`)
-- **Dart -> 原生 (`invokeMethod`)**：`getHostCapabilities`、`setVolumeKeyIntercept`、`keepScreenOn`、`pickLocalBookFile`、`ttsSpeak`、`ttsStop`、`ttsIsAvailable`、`exportTextFile`、`pickAndReadTextFile`
+- **Dart -> 原生 (`invokeMethod`，11 项)**：`getHostCapabilities`、`setVolumeKeyIntercept`、`keepScreenOn`、`pickLocalBookFile`、`ttsSpeak`、`ttsStop`、`ttsIsAvailable`、`exportTextFile`、`pickAndReadTextFile`、`installApk`、`openExternalUrl`
 - **原生 -> Dart (`_handleNativeCall`)**：`onVolumeDown`、`onVolumeUp`、`onTtsDone`、`onTtsError`
 
 ---
@@ -113,11 +117,12 @@ ios/Runner/
 # 全量静态分析
 flutter analyze
 
-# 全量单元测试（13 个测试文件）
+# 全量单元测试（14 个测试文件）
 flutter test
 
 # 单独运行关键门禁测试
 flutter test test/host_bridge_parity_test.dart
+flutter test test/app_update_test.dart
 flutter test test/source_engine_test.dart
 flutter test test/tts_engine_test.dart
 flutter test test/sync_and_source_m3_test.dart
