@@ -30,9 +30,12 @@ class PagePainter extends CustomPainter {
     required String bookTitle,
     required TypographyConfig config,
     required ReaderPaperTheme theme,
+    bool drawBackground = true,
   }) {
-    final bgPaint = Paint()..color = theme.background;
-    canvas.drawRect(Offset.zero & size, bgPaint);
+    if (drawBackground) {
+      final bgPaint = Paint()..color = theme.background;
+      canvas.drawRect(Offset.zero & size, bgPaint);
+    }
 
     final metaStyle = TextStyle(
       fontSize: 11.5,
