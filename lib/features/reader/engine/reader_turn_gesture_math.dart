@@ -32,14 +32,31 @@ class ReaderTurnGestureMath {
     return Offset(touchX, touchY);
   }
 
-  /// 按滑行比例与脱手瞬时速度判定是否提交翻页
+  /// 有向投影计算拖拽进度（反向回拖越过起手点归 0，杜绝反弹强行翻页）
+  static double computeDirectedProgress({
+    required int direction,
+    required double dx,
+    required double viewportWidth,
+  }) {
+    if (direction == 0 || viewportWidth <= 0) return 0.0;
+    final directed = direction > 0 ? -dx : dx;
+    return (directed / viewportWidth).clamp(0.0, 1.0);
+  }
+
+  /// 按滑行比例与脱手瞬时速度判定是否提交翻页（排除反向快甩取消手势）
   static bool shouldCommitDrag({
     required int direction,
     required double progress,
     required double velocityX,
   }) {
-    if (direction > 0) return progress > 0.16 || velocityX < -320.0;
-    if (direction < 0) return progress > 0.16 || velocityX > 320.0;
+    if (direction > 0) {
+      if (velocityX > 320.0) return false;
+      return progress > 0.16 || velocityX < -320.0;
+    }
+    if (direction < 0) {
+      if (velocityX < -320.0) return false;
+      return progress > 0.16 || velocityX > 320.0;
+    }
     return false;
   }
 

@@ -1,7 +1,9 @@
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:yuewei_reader/features/reader/engine/page_models.dart';
 import 'package:yuewei_reader/features/reader/engine/typography_engine.dart';
+import 'package:yuewei_reader/features/reader/presentation/page_painter.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -34,7 +36,8 @@ void main() {
       );
 
       expect(pages.length, greaterThan(1));
-      final headingHeight = config.fontSize * 1.45 + 24.0;
+      final headingHeight =
+          TypographyEngine.measureHeadingHeight('第一章 夜航惊涛', config);
 
       for (final page in pages) {
         expect(page.lines, isNotEmpty);
@@ -222,6 +225,76 @@ void main() {
         }
         tp.dispose();
       }
+    });
+
+    test('双行超长章标题实测高度与画笔 1:1 对齐，绝不与正文首行叠印或底边溢出', () {
+      const config = TypographyConfig(
+        fontSize: 20.0,
+        lineHeightRatio: 1.72,
+        paragraphGap: 13.0,
+        viewportWidth: 360.0,
+        viewportHeight: 780.0,
+        horizontalPadding: 22.0,
+        topPadding: 58.0,
+        bottomPadding: 44.0,
+      );
+      const shortTitle = '第一章 启程';
+      const longTitle =
+          '第一百零八章 陨落的天才少年在乌坦城测验广场上立下三年之约并踏上远行之路';
+
+      final shortH = TypographyEngine.measureHeadingHeight(shortTitle, config);
+      final longH = TypographyEngine.measureHeadingHeight(longTitle, config);
+
+      // 实测双行标题实际 TextPainter 高度，确认预留空间严格大于标题实体高度
+      final tp = TextPainter(
+        text: TextSpan(
+          text: longTitle,
+          style: TypographyEngine.chapterHeadingStyle(config, Colors.black),
+        ),
+        textDirection: TextDirection.ltr,
+        maxLines: 2,
+        ellipsis: '…',
+      )..layout(maxWidth: config.contentWidth);
+      final actualTitleHeight = tp.height;
+      tp.dispose();
+
+      expect(longH, greaterThan(shortH + 20.0));
+      expect(longH, greaterThanOrEqualTo(actualTitleHeight + 19.0));
+
+      final shortPages = engine.paginate(
+        paragraphs: sampleParagraphs,
+        chapterTitle: shortTitle,
+        config: config,
+      );
+      final longPages = engine.paginate(
+        paragraphs: sampleParagraphs,
+        chapterTitle: longTitle,
+        config: config,
+      );
+      // 双行标题占用更高首屏空间，首页容纳行数不应多于单行标题，且总高严格不超 contentHeight
+      expect(longPages.first.lines.length,
+          lessThanOrEqualTo(shortPages.first.lines.length));
+      var used = longH;
+      for (final line in longPages.first.lines) {
+        expect(used + config.lineHeight,
+            lessThanOrEqualTo(config.contentHeight + 0.001));
+        used += config.lineHeight +
+            (line.isLastLineOfPara ? config.paragraphGap : 0.0);
+      }
+
+      // 离屏 Canvas 1:1 绘制校验零异常
+      final rec = ui.PictureRecorder();
+      PagePainter.drawPage(
+        Canvas(rec),
+        Size(config.viewportWidth, config.viewportHeight),
+        page: longPages.first,
+        totalPages: longPages.length,
+        chapterTitle: longTitle,
+        bookTitle: '测试书目',
+        config: config,
+        theme: ReaderPaperTheme.porcelainWhite,
+      );
+      rec.endRecording().dispose();
     });
   });
 }

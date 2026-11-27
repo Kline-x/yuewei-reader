@@ -6,6 +6,9 @@ import '../engine/page_models.dart';
 import '../engine/reader_chapter_loader.dart';
 import '../engine/reader_page_slot.dart';
 import '../engine/reader_slide_window.dart';
+import 'reader_session_bootstrap.dart';
+
+part 'reader_session_scroll_ops.dart';
 
 /// 阅读器章节加载、三章滑窗分页与跨模式进度同步控制器
 class ReaderSessionController extends ChangeNotifier {
@@ -13,17 +16,18 @@ class ReaderSessionController extends ChangeNotifier {
     required this.bookId,
     required this.ref,
     required this.db,
-    required this.onNeedResetScroll,
-  });
+    this.onNeedResetScroll,
+    DateTime Function()? clock,
+  }) : _readingTimer = ForegroundReadingTimer(clock: clock);
 
   final String bookId;
   final WidgetRef ref;
   final AppDatabase db;
-  final VoidCallback onNeedResetScroll;
+  final VoidCallback? onNeedResetScroll;
 
   final ReaderChapterLoader loader = ReaderChapterLoader();
   final ReaderSlideWindow window = ReaderSlideWindow();
-  final DateTime _sessionStart = DateTime.now();
+  final ForegroundReadingTimer _readingTimer;
 
   Book? book;
   List<Chapter> chapters = const [];
@@ -34,6 +38,10 @@ class ReaderSessionController extends ChangeNotifier {
   int pageIndex = 0;
   int charAnchorOffset = 0;
   int jumpSequence = 0;
+  int _scrollJumpToken = 0;
+  ScrollJumpCommand scrollJumpCommand =
+      const ScrollJumpCommand(token: 0, chapterIndex: 0);
+
   int _loadEpoch = 0;
   bool loading = true;
   String? errorMsg;
@@ -50,10 +58,16 @@ class ReaderSessionController extends ChangeNotifier {
 
   PageRenderItem? get currentRenderItem => buildSlots().current;
 
+  void pauseReadingTimer() => _readingTimer.pause();
+
+  void resumeReadingTimer() {
+    if (!_disposed) _readingTimer.resume();
+  }
+
   @override
   void dispose() {
     _disposed = true;
-    final sec = DateTime.now().difference(_sessionStart).inSeconds;
+    final sec = _readingTimer.finishAndCollectSeconds();
     if (sec > 0) db.recordReadingSeconds(bookId, sec);
     super.dispose();
   }
@@ -64,14 +78,35 @@ class ReaderSessionController extends ChangeNotifier {
 
   Future<void> bootstrap(int? initialChapterIndex) async {
     final loadedBook = await db.getBookById(bookId);
-    final loadedChapters = await db.getChaptersByBook(bookId);
+    var loadedChapters = await db.getChaptersByBook(bookId);
     if (_disposed) return;
     if (loadedBook != null && loadedBook.hasUnreadUpdate) {
       unawaited(db.setBookUnreadUpdate(bookId, false));
     }
-    final syncedBook = loadedBook?.hasUnreadUpdate == true
+    var syncedBook = loadedBook?.hasUnreadUpdate == true
         ? loadedBook!.copyWith(hasUnreadUpdate: false)
         : loadedBook;
+
+    if (ReaderSessionBootstrap.needsRemoteTocRepair(
+      syncedBook,
+      loadedChapters,
+    )) {
+      book = syncedBook;
+      loading = true;
+      errorMsg = null;
+      _emit();
+      final repaired = await ReaderSessionBootstrap.tryRepairMissingToc(
+        ref: ref,
+        db: db,
+        book: syncedBook!,
+      );
+      if (_disposed) return;
+      if (repaired != null) {
+        syncedBook = repaired.book;
+        loadedChapters = repaired.chapters;
+      }
+    }
+
     if (syncedBook == null || loadedChapters.isEmpty) {
       book = syncedBook;
       chapters = loadedChapters;
@@ -94,6 +129,14 @@ class ReaderSessionController extends ChangeNotifier {
     await loadChapter(startIdx, charOffset: startOffset);
   }
 
+  Future<void> retryCurrent() async {
+    if (chapters.isEmpty) {
+      await bootstrap(null);
+    } else {
+      await loadChapter(chapterIndex);
+    }
+  }
+
   Future<void> loadChapter(
     int index, {
     int charOffset = 0,
@@ -106,6 +149,8 @@ class ReaderSessionController extends ChangeNotifier {
     var loaded = loader.peekMemory(bookId, index);
     if (loaded == null || loaded.isEmpty) {
       chapterIndex = index;
+      paragraphs = const [];
+      scrollBlocks = const [];
       loading = true;
       errorMsg = null;
       _jumpToLastPageOnLoad = landOnLastPage;
@@ -113,7 +158,9 @@ class ReaderSessionController extends ChangeNotifier {
       _emit();
       try {
         loaded = await loader.loadChapterParagraphs(
-          ref: ref, book: book!, chapter: chapters[index],
+          ref: ref,
+          book: book!,
+          chapter: chapters[index],
         );
       } catch (_) {
         if (_disposed || reqId != _loadEpoch) return;
@@ -131,172 +178,111 @@ class ReaderSessionController extends ChangeNotifier {
       }
     }
     _applyLoadedChapter(
-      index: index, chapterTitle: chapters[index].title, loadedParas: loaded,
-      charOffset: charOffset, landOnLastPage: landOnLastPage,
+      index: index,
+      chapterTitle: chapters[index].title,
+      loadedParas: loaded,
+      charOffset: charOffset,
+      landOnLastPage: landOnLastPage,
     );
     _prefetchNeighbors(index, reqId);
   }
 
   /// 精确跳转至指定章节与字符偏移（同章瞬时重算页码/滚动锚点，跨章自动加载）
-  Future<void> jumpToLocation(int targetChapterIndex, int targetCharOffset) async {
+  Future<void> jumpToLocation(
+    int targetChapterIndex,
+    int targetCharOffset, {
+    bool animateScroll = false,
+    bool emitScrollCommand = true,
+  }) async {
     if (_disposed || chapters.isEmpty) return;
     final targetIdx = targetChapterIndex.clamp(0, chapters.length - 1);
     final safeOffset = targetCharOffset < 0 ? 0 : targetCharOffset;
     jumpSequence++;
-    if (targetIdx == chapterIndex && paragraphs.isNotEmpty) {
-      loading = false;
-      errorMsg = null;
+    if (targetIdx == chapterIndex &&
+        !loading &&
+        errorMsg == null &&
+        paragraphs.isNotEmpty) {
       charAnchorOffset = safeOffset;
       final cfg = window.lastConfig;
       if (cfg != null) {
         final pages = window.ensurePaginated(
-          chapterIndex: targetIdx, chapterTitle: currentChapterTitle,
-          paragraphs: paragraphs, config: cfg,
+          chapterIndex: targetIdx,
+          chapterTitle: currentChapterTitle,
+          paragraphs: paragraphs,
+          config: cfg,
         );
         pageIndex = window.findPageByCharOffset(pages, safeOffset);
       }
-      if (scrollBlocks.isEmpty || scrollBlocks.first.chapterIndex != targetIdx) {
+      if (!scrollBlocks.any((b) => b.chapterIndex == targetIdx)) {
         scrollBlocks = window.buildInitialScrollBlocks(
-          chapterIndex: targetIdx, chapterTitle: currentChapterTitle,
-          paragraphs: paragraphs, bookId: bookId, chapters: chapters, loader: loader,
+          chapterIndex: targetIdx,
+          chapterTitle: currentChapterTitle,
+          paragraphs: paragraphs,
+          bookId: bookId,
+          chapters: chapters,
+          loader: loader,
+        );
+      }
+      if (emitScrollCommand) {
+        scrollJumpCommand = ScrollJumpCommand(
+          token: ++_scrollJumpToken,
+          chapterIndex: targetIdx,
+          charOffset: safeOffset,
+          animate: animateScroll,
         );
       }
       _emit();
-      onNeedResetScroll();
       _persistProgress(targetIdx, currentChapterTitle, safeOffset);
       return;
     }
     await loadChapter(targetIdx, charOffset: safeOffset);
   }
 
-  void _applyLoadedChapter({
-    required int index,
-    required String chapterTitle,
-    required List<String> loadedParas,
-    required int charOffset,
-    required bool landOnLastPage,
-  }) {
-    scrollBlocks = window.buildInitialScrollBlocks(
-      chapterIndex: index, chapterTitle: chapterTitle, paragraphs: loadedParas,
-      bookId: bookId, chapters: chapters, loader: loader,
-    );
-    chapterIndex = index;
-    paragraphs = loadedParas;
-    loading = false;
-    errorMsg = null;
-    charAnchorOffset = charOffset;
-    _jumpToLastPageOnLoad = landOnLastPage;
-
-    final cfg = window.lastConfig;
-    if (cfg != null) {
-      final pages = window.ensurePaginated(
-        chapterIndex: index, chapterTitle: chapterTitle,
-        paragraphs: loadedParas, config: cfg,
-      );
-      pageIndex = landOnLastPage
-          ? (pages.length - 1).clamp(0, pages.length - 1)
-          : window.findPageByCharOffset(pages, charOffset);
-      _jumpToLastPageOnLoad = false;
-    }
-    _emit();
-    onNeedResetScroll();
-    _persistProgress(index, chapterTitle, charOffset);
-  }
-
-  Future<void> _prefetchNeighbors(int centerIdx, int reqId) async {
-    if (book == null || _disposed) return;
-    for (final idx in [centerIdx + 1, centerIdx - 1]) {
-      if (idx < 0 || idx >= chapters.length || _disposed) continue;
-      final paras = await loader.prefetchToMemory(ref: ref, book: book!, chapter: chapters[idx]);
-      if (_disposed || reqId != _loadEpoch || paras == null) continue;
-      _syncWindowIfReady();
-      _emit();
-    }
-  }
-
-  void _syncWindowIfReady() {
-    final cfg = window.lastConfig;
-    if (cfg == null) return;
-    window.syncWindow(
-      config: cfg, activeChapterIndex: chapterIndex,
-      bookId: bookId, chapters: chapters, loader: loader,
-    );
-  }
-
-  Future<void> appendNextScrollChapter() async {
-    if (_appendingScrollNext || scrollBlocks.isEmpty || book == null) return;
-    final nextIdx = scrollBlocks.last.chapterIndex + 1;
-    if (nextIdx >= chapters.length) return;
-    _appendingScrollNext = true;
-    try {
-      final paras = await loader.prefetchToMemory(ref: ref, book: book!, chapter: chapters[nextIdx]);
-      if (_disposed || paras == null || paras.isEmpty) return;
-      if (scrollBlocks.any((b) => b.chapterIndex == nextIdx)) return;
-      scrollBlocks = [
-        ...scrollBlocks,
-        ChapterBlock(chapterIndex: nextIdx, chapterTitle: chapters[nextIdx].title, paragraphs: paras),
-      ];
-      _emit();
-    } finally {
-      _appendingScrollNext = false;
-    }
-  }
-
-  void handleScrollChapterProgress(int chIdx, int offset) {
-    if (chIdx < 0 || chIdx >= chapters.length || _disposed) return;
-    var chParas = loader.peekMemory(bookId, chIdx);
-    if (chParas == null || chParas.isEmpty) {
-      final match = scrollBlocks.where((b) => b.chapterIndex == chIdx);
-      chParas = match.isNotEmpty ? match.first.paragraphs : paragraphs;
-    }
-    charAnchorOffset = offset;
-    _persistProgress(chIdx, chapters[chIdx].title, offset);
-    final cfg = window.lastConfig;
-    if (chIdx != chapterIndex) {
-      chapterIndex = chIdx;
-      paragraphs = chParas;
-      if (cfg != null) {
-        _syncWindowIfReady();
-        final pages = window.ensurePaginated(
-          chapterIndex: chIdx, chapterTitle: chapters[chIdx].title, paragraphs: chParas, config: cfg,
-        );
-        pageIndex = window.findPageByCharOffset(pages, offset);
-      }
-      _emit();
-      _prefetchNeighbors(chIdx, _loadEpoch);
-    } else if (cfg != null) {
-      final pages = window.pagesOf(chIdx);
-      if (pages != null && pages.isNotEmpty) pageIndex = window.findPageByCharOffset(pages, offset);
-    }
-  }
-
   void syncForBuild(TypographyConfig config, PageTurnMode turnMode) {
     if (loading || errorMsg != null || paragraphs.isEmpty) return;
     final cfgChanged = window.syncWindow(
-      config: config, activeChapterIndex: chapterIndex, bookId: bookId, chapters: chapters, loader: loader,
+      config: config,
+      activeChapterIndex: chapterIndex,
+      bookId: bookId,
+      chapters: chapters,
+      loader: loader,
     );
     final curPages = window.ensurePaginated(
-      chapterIndex: chapterIndex, chapterTitle: currentChapterTitle, paragraphs: paragraphs, config: config,
+      chapterIndex: chapterIndex,
+      chapterTitle: currentChapterTitle,
+      paragraphs: paragraphs,
+      config: config,
     );
     if (cfgChanged || _jumpToLastPageOnLoad) {
       pageIndex = _jumpToLastPageOnLoad
           ? (curPages.length - 1).clamp(0, curPages.length - 1)
           : window.findPageByCharOffset(curPages, charAnchorOffset);
+      if (_jumpToLastPageOnLoad && curPages.isNotEmpty) {
+        charAnchorOffset = curPages[pageIndex].charStart;
+      }
       _jumpToLastPageOnLoad = false;
     }
-    if (turnMode != PageTurnMode.scroll && (scrollBlocks.isEmpty || scrollBlocks.first.chapterIndex != chapterIndex)) {
+    if (turnMode != PageTurnMode.scroll &&
+        (scrollBlocks.isEmpty ||
+            scrollBlocks.first.chapterIndex != chapterIndex)) {
       scrollBlocks = window.buildInitialScrollBlocks(
-        chapterIndex: chapterIndex, chapterTitle: currentChapterTitle,
-        paragraphs: paragraphs, bookId: bookId, chapters: chapters, loader: loader,
+        chapterIndex: chapterIndex,
+        chapterTitle: currentChapterTitle,
+        paragraphs: paragraphs,
+        bookId: bookId,
+        chapters: chapters,
+        loader: loader,
       );
     }
   }
 
-  ({PageRenderItem? prev, PageRenderItem? current, PageRenderItem? next}) buildSlots() =>
-      window.buildSlots(
-        chapterIndex: chapterIndex, pageIndex: pageIndex,
-        bookTitle: book?.title ?? '', chapters: chapters,
-      );
+  ({PageRenderItem? prev, PageRenderItem? current, PageRenderItem? next})
+      buildSlots() => window.buildSlots(
+            chapterIndex: chapterIndex,
+            pageIndex: pageIndex,
+            bookTitle: book?.title ?? '',
+            chapters: chapters,
+          );
 
   void commitNext() {
     final cur = window.pagesOf(chapterIndex) ?? const [];
@@ -338,6 +324,9 @@ class ReaderSessionController extends ChangeNotifier {
 
   void _persistProgress(int chIdx, String chTitle, int offset) =>
       db.updateReadingProgress(
-        bookId: bookId, chapterIndex: chIdx, chapterTitle: chTitle, charOffset: offset,
+        bookId: bookId,
+        chapterIndex: chIdx,
+        chapterTitle: chTitle,
+        charOffset: offset,
       );
 }

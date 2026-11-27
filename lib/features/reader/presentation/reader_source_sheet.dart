@@ -76,6 +76,7 @@ class ReaderSourceSheet extends ConsumerStatefulWidget {
 class _ReaderSourceSheetState extends ConsumerState<ReaderSourceSheet> {
   final CancelToken _cancelToken = CancelToken();
   final List<_SourceProbeCandidate> _candidates = [];
+  StreamSubscription<SourceSearchHit>? _sub;
   bool _probing = true;
   bool _switching = false;
 
@@ -87,6 +88,8 @@ class _ReaderSourceSheetState extends ConsumerState<ReaderSourceSheet> {
 
   @override
   void dispose() {
+    _sub?.cancel();
+    _sub = null;
     if (!_cancelToken.isCancelled) _cancelToken.cancel('关闭换源面板');
     super.dispose();
   }
@@ -95,6 +98,7 @@ class _ReaderSourceSheetState extends ConsumerState<ReaderSourceSheet> {
     final sourceRepo = ref.read(sourceRepositoryProvider);
     final crawler = ref.read(crawlerServiceProvider);
     final rules = await sourceRepo.getEnabledRules();
+    if (!mounted) return;
     final targetTitleKey = SourceSearchHit.normalizeBookKey(widget.bookTitle);
     final targetAuthorKey = SourceSearchHit.normalizeBookKey(widget.bookAuthor);
 
@@ -134,6 +138,7 @@ class _ReaderSourceSheetState extends ConsumerState<ReaderSourceSheet> {
       }).catchError((_) {});
       futures.add(task);
     });
+    _sub = sub;
 
     await sub.asFuture<void>().catchError((_) {});
     await Future.wait(futures);
@@ -185,12 +190,20 @@ class _ReaderSourceSheetState extends ConsumerState<ReaderSourceSheet> {
                           ? null
                           : () async {
                               setState(() => _switching = true);
-                              await widget.onSelectSource(
-                                item.rule,
-                                item.hit,
-                                item.chapters,
-                              );
-                              if (context.mounted) Navigator.of(context).pop();
+                              try {
+                                await widget.onSelectSource(
+                                  item.rule,
+                                  item.hit,
+                                  item.chapters,
+                                );
+                                if (context.mounted) {
+                                  Navigator.of(context).pop();
+                                }
+                              } finally {
+                                if (mounted) {
+                                  setState(() => _switching = false);
+                                }
+                              }
                             },
                       child: Row(
                         children: [

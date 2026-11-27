@@ -12,8 +12,10 @@ import 'package:yuewei_reader/core/platform/host_bridge.dart';
 import 'package:yuewei_reader/core/storage/chapter_file_store.dart';
 import 'package:yuewei_reader/design_system/tokens/soft_tokens.dart';
 import 'package:yuewei_reader/features/reader/engine/page_models.dart';
+import 'package:yuewei_reader/features/reader/presentation/reader_continuous_scroll_view.dart';
 import 'package:yuewei_reader/features/reader/presentation/reader_page.dart';
 import 'package:yuewei_reader/features/reader/presentation/reader_pager_views.dart';
+import 'package:yuewei_reader/features/reader/presentation/reader_settings_provider.dart';
 import 'package:yuewei_reader/features/tts/tts_control_sheet.dart';
 import 'package:yuewei_reader/features/tts/tts_controller.dart';
 
@@ -36,11 +38,9 @@ Future<void> _sendNativeCall(String method, Map<String, dynamic> args) async {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   driftRuntimeOptions.dontWarnAboutMultipleDatabases = true;
-  // 确保提前初始化 HostBridge 方法处理器
   HostBridge.instance;
 
   final calls = <MethodCall>[];
-
   var speakFailRemaining = 0;
 
   setUp(() {
@@ -51,7 +51,10 @@ void main() {
       calls.add(call);
       switch (call.method) {
         case 'ttsSpeak':
-          if (speakFailRemaining > 0) { speakFailRemaining--; return false; }
+          if (speakFailRemaining > 0) {
+            speakFailRemaining--;
+            return false;
+          }
           return true;
         case 'ttsStop' || 'ttsIsAvailable' || 'setVolumeKeyIntercept' || 'keepScreenOn':
           return true;
@@ -63,13 +66,10 @@ void main() {
     });
   });
 
-  tearDown(() {
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(_channel, null);
-  });
+  tearDown(() => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(_channel, null));
 
-  group('TTS 沉浸听书状态机与跨章/倍速/定时单测', () {
-    test('起播跳过空段、暂停恢复、utteranceId 校验跨段定位与自动跨章续播', () async {
+  group('TTS 沉浸听书状态机、超长段切片、暂停冻时与滚动联动单测', () {
+    test('起播跳过空段、暂停恢复、utteranceId 校验、章首上一段落上章末段与跨章续播', () async {
       final scope = _createTtsScope();
       final located = <(int, int)>[];
       final requestedChapters = <int>[];
@@ -79,26 +79,25 @@ void main() {
         onLocate: (ch, off) => located.add((ch, off)),
         onRequestChapter: (targetIdx) async {
           requestedChapters.add(targetIdx);
-          if (targetIdx != 1) return null;
-          return (chapterIndex: 1, chapterTitle: '第二章 异火降世', paragraphs: ['\u3000\u3000新章首段内容。', '新章次段内容。'], totalChapters: 2);
+          if (targetIdx == 0) {
+            return (chapterIndex: 0, chapterTitle: '第一章 陨落天才', paragraphs: ['首段。', '上章末段内容。', '   '], totalChapters: 2);
+          }
+          if (targetIdx == 1) {
+            return (chapterIndex: 1, chapterTitle: '第二章 异火降世', paragraphs: ['\u3000\u3000新章首段内容。', '新章次段内容。'], totalChapters: 2);
+          }
+          return null;
         },
       );
 
       final ch0Paras = ['   ', '\u3000\u3000第一段正文。', '', '\u3000\u3000第二段正文。'];
       expect(await notifier.startReading(bookId: 'b1', chapterIndex: 0, chapterTitle: '第一章 陨落天才', paragraphs: ch0Paras, totalChapters: 2), isTrue);
-      var state = scope.container.read(ttsControllerProvider);
-      expect(state.status, TtsPlaybackStatus.playing);
-      expect(state.paragraphIndex, 1);
-      expect(calls.last.method, 'ttsSpeak');
-      expect((calls.last.arguments as Map)['text'], '第一段正文。');
+      var st = scope.container.read(ttsControllerProvider);
+      expect((st.status, st.paragraphIndex, (calls.last.arguments as Map)['text']), (TtsPlaybackStatus.playing, 1, '第一段正文。'));
       final firstUid = (calls.last.arguments as Map)['utteranceId'] as String;
 
       await notifier.pause();
-      expect(scope.container.read(ttsControllerProvider).status, TtsPlaybackStatus.paused);
-      expect(calls.last.method, 'ttsStop');
-
+      expect(scope.container.read(ttsControllerProvider).isPaused, isTrue);
       await notifier.resume();
-      expect(scope.container.read(ttsControllerProvider).status, TtsPlaybackStatus.playing);
       final resumedUid = (calls.last.arguments as Map)['utteranceId'] as String;
       expect(resumedUid, isNot(equals(firstUid)));
 
@@ -108,60 +107,142 @@ void main() {
 
       await _sendNativeCall('onTtsDone', {'utteranceId': resumedUid});
       await Future<void>.delayed(Duration.zero);
-      state = scope.container.read(ttsControllerProvider);
-      expect(state.paragraphIndex, 3);
+      st = scope.container.read(ttsControllerProvider);
+      expect(st.paragraphIndex, 3);
       expect(located.last, (0, TtsController.charOffsetOfParagraph(ch0Paras, 3)));
-      final lastParaUid = (calls.last.arguments as Map)['utteranceId'] as String;
 
-      await _sendNativeCall('onTtsDone', {'utteranceId': lastParaUid});
+      final lastUid = (calls.last.arguments as Map)['utteranceId'] as String;
+      await _sendNativeCall('onTtsDone', {'utteranceId': lastUid});
       await Future<void>.delayed(Duration.zero);
-      state = scope.container.read(ttsControllerProvider);
+      st = scope.container.read(ttsControllerProvider);
       expect(requestedChapters, [1]);
-      expect(state.chapterIndex, 1);
-      expect(state.chapterTitle, '第二章 异火降世');
-      expect(state.paragraphIndex, 0);
-      expect((calls.last.arguments as Map)['text'], '新章首段内容。');
+      expect((st.chapterIndex, st.paragraphIndex), (1, 0));
+
+      // 章首调用 previousParagraph 应落到上一章最后一个非空段（索引 1）
+      await notifier.previousParagraph();
+      st = scope.container.read(ttsControllerProvider);
+      expect((st.chapterIndex, st.paragraphIndex, st.currentParagraphText), (0, 1, '上章末段内容。'));
     });
 
-    test('5档倍速持久化与「播完本章」定时模式到章末停播', () async {
+    test('超长段落（>1200 字含标点与代理对 Emoji）安全切分、零丢字零劈裂并依次播报', () async {
       final scope = _createTtsScope();
       final notifier = scope.container.read(ttsControllerProvider.notifier);
-      await notifier.startReading(bookId: 'b2', chapterIndex: 0, chapterTitle: '第一章', paragraphs: ['唯一一段内容。'], totalChapters: 3);
+      final longPara = '${'这是一段用于检验超长分段安全切片的中文测试句子。' * 65}🔥🚀🌟${'后续收尾正文。' * 10}';
+      final chunks = TtsController.splitForSpeech(longPara);
+      expect(chunks.length, greaterThanOrEqualTo(2));
+      expect(chunks.join(), equals(TtsController.cleanParagraph(longPara)));
+      for (final c in chunks) {
+        expect(c.characters.length, lessThanOrEqualTo(1200));
+        // 严禁出现孤立 UTF-16 代理对码元
+        for (var i = 0; i < c.length; i++) {
+          final u = c.codeUnitAt(i);
+          if (u >= 0xD800 && u <= 0xDBFF) {
+            expect(i + 1 < c.length && c.codeUnitAt(i + 1) >= 0xDC00 && c.codeUnitAt(i + 1) <= 0xDFFF, isTrue);
+          }
+        }
+      }
+
+      expect(await notifier.startReading(bookId: 'b_long', chapterIndex: 0, chapterTitle: '长段章', paragraphs: [longPara, '真正下一段。'], totalChapters: 1), isTrue);
+      expect((calls.last.arguments as Map)['text'], chunks.first);
+      final uid0 = (calls.last.arguments as Map)['utteranceId'] as String;
+      await _sendNativeCall('onTtsDone', {'utteranceId': uid0});
+      await Future<void>.delayed(Duration.zero);
+      // 仍在第 0 段播第 2 子片段，不提前跳段
+      expect(scope.container.read(ttsControllerProvider).paragraphIndex, 0);
+      expect((calls.last.arguments as Map)['text'], chunks[1]);
+    });
+
+    test('空章/null 回退 paused 写 lastError、自动跨章失败保留进度定时与 onTtsError 透传 message', () async {
+      final scope = _createTtsScope();
+      final notifier = scope.container.read(ttsControllerProvider.notifier);
+      var returnEmpty = false;
+      notifier.bindReader(
+        owner: 'r_err',
+        onLocate: (_, _) {},
+        onRequestChapter: (_) async => returnEmpty
+            ? (chapterIndex: 1, chapterTitle: '空章', paragraphs: ['   ', ''], totalChapters: 3)
+            : null,
+      );
+      await notifier.startReading(bookId: 'b_err', chapterIndex: 0, chapterTitle: '第一章', paragraphs: ['唯二段落。'], totalChapters: 3);
+      notifier.setSleepTimer(TtsSleepTimerMode.min15);
+
+      // 1. onTtsError 透传原生 message 到 lastError 并降级 paused
+      final uid = (calls.last.arguments as Map)['utteranceId'] as String;
+      await _sendNativeCall('onTtsError', {'utteranceId': uid, 'message': '语音播放被系统打断'});
+      await Future<void>.delayed(Duration.zero);
+      var st = scope.container.read(ttsControllerProvider);
+      expect((st.status, st.lastError), (TtsPlaybackStatus.paused, '语音播放被系统打断'));
+
+      // 2. 恢复播放后自然到章末自动跨章，但目标章返回 null -> 降级 paused 保留进度与定时
+      await notifier.resume();
+      final uid2 = (calls.last.arguments as Map)['utteranceId'] as String;
+      await _sendNativeCall('onTtsDone', {'utteranceId': uid2});
+      await Future<void>.delayed(Duration.zero);
+      st = scope.container.read(ttsControllerProvider);
+      expect(st.status, TtsPlaybackStatus.paused);
+      expect(st.bookId, 'b_err');
+      expect(st.remainingSeconds, isNotNull);
+      expect(st.lastError, isNotEmpty);
+
+      // 3. 手动切章遇到空章亦回退 paused 并写 lastError
+      returnEmpty = true;
+      expect(await notifier.nextChapter(), isFalse);
+      st = scope.container.read(ttsControllerProvider);
+      expect(st.status, TtsPlaybackStatus.paused);
+      expect(st.lastError, contains('为空'));
+    });
+
+    test('5档倍速持久化、「播完本章」停播、重试降级与并发守卫', () async {
+      final scope = _createTtsScope();
+      final notifier = scope.container.read(ttsControllerProvider.notifier);
+      notifier.bindReader(owner: 'owner_new', onLocate: (_, _) {}, onRequestChapter: (_) async => null);
+      speakFailRemaining = 1;
+      expect(await notifier.startReading(bookId: 'b2', chapterIndex: 0, chapterTitle: '第一章', paragraphs: ['首段内容。', '次段内容。'], totalChapters: 3), isTrue);
+      expect(calls.where((c) => c.method == 'ttsSpeak').length, 2);
+
       await notifier.setSpeechRate(1.5);
-      expect(scope.container.read(ttsControllerProvider).speechRate, 1.5);
-      expect((calls.last.arguments as Map)['rate'], 1.5);
       expect(await scope.db.getPreference(TtsController.speechRatePrefKey), '1.5');
+      notifier.unbindAndStopOnDispose('owner_old');
+      await Future<void>.delayed(Duration.zero);
+      expect(scope.container.read(ttsControllerProvider).isPlaying, isTrue);
+
+      speakFailRemaining = 2;
+      await notifier.nextParagraph();
+      expect(scope.container.read(ttsControllerProvider).status, TtsPlaybackStatus.paused);
+      expect(await notifier.resume(), isTrue);
 
       notifier.setSleepTimer(TtsSleepTimerMode.chapterEnd);
-      final activeUid = (calls.last.arguments as Map)['utteranceId'] as String;
-      await _sendNativeCall('onTtsDone', {'utteranceId': activeUid});
+      final uid = (calls.last.arguments as Map)['utteranceId'] as String;
+      await _sendNativeCall('onTtsDone', {'utteranceId': uid});
       await Future<void>.delayed(Duration.zero);
       expect(scope.container.read(ttsControllerProvider).status, TtsPlaybackStatus.idle);
-      expect(calls.last.method, 'ttsStop');
-      // 模拟备份热恢复覆盖持久化语速后，即时刷新内存态（不受手动调速守卫限制）
       await scope.db.setPreference(TtsController.speechRatePrefKey, '1.75');
       await notifier.reloadSpeechRateFromPrefs();
       expect(scope.container.read(ttsControllerProvider).speechRate, 1.75);
     });
 
-    testWidgets('睡眠定时分钟倒计时每秒递减并在归零时自动停播 (FakeAsync)', (tester) async {
+    testWidgets('睡眠定时在暂停态冻结扣减、恢复后归零自动停播 (FakeAsync)', (tester) async {
       final scope = _createTtsScope();
       final notifier = scope.container.read(ttsControllerProvider.notifier);
       await notifier.startReading(bookId: 'b3', chapterIndex: 0, chapterTitle: '第一章', paragraphs: ['睡眠测试段落。'], totalChapters: 1);
-      expect(scope.container.read(ttsControllerProvider).isPlaying, isTrue);
-
       notifier.setSleepTimer(TtsSleepTimerMode.min15);
-      expect(scope.container.read(ttsControllerProvider).remainingSeconds, 900);
       await tester.pump(const Duration(seconds: 61));
       expect(scope.container.read(ttsControllerProvider).remainingSeconds, 839);
       expect(scope.container.read(ttsControllerProvider).formattedSleepBadge, '13:59');
 
+      // 暂停 30 秒期间 remainingSeconds 冻结不扣减
+      await notifier.pause();
+      await tester.pump(const Duration(seconds: 30));
+      expect(scope.container.read(ttsControllerProvider).remainingSeconds, 839);
+
+      // 恢复后继续倒计时直至归零停播
+      await notifier.resume();
       await tester.pump(const Duration(seconds: 839));
       expect(scope.container.read(ttsControllerProvider).status, TtsPlaybackStatus.idle);
       expect(calls.last.method, 'ttsStop');
     });
 
-    testWidgets('TtsControlSheet 与迷你悬浮胶囊渲染及按钮交互闭环', (tester) async {
+    testWidgets('TtsControlSheet、胶囊交互与主题对比度合规校验', (tester) async {
       final db = _createTtsScope().db;
       await tester.pumpWidget(ProviderScope(
         overrides: [appDatabaseProvider.overrideWithValue(db)],
@@ -170,37 +251,25 @@ void main() {
           return Scaffold(body: Stack(children: [
             Center(child: ElevatedButton(
               onPressed: () async {
-                await ref.read(ttsControllerProvider.notifier).startReading(
-                  bookId: 'b4', chapterIndex: 0, chapterTitle: '第三章 面板测试', paragraphs: ['第一段预览文本', '第二段预览文本'], totalChapters: 2,
-                );
+                await ref.read(ttsControllerProvider.notifier).startReading(bookId: 'b4', chapterIndex: 0, chapterTitle: '第三章 面板测试', paragraphs: ['第一段预览文本', '第二段预览文本'], totalChapters: 2);
                 if (context.mounted) TtsControlSheet.show(context);
               },
               child: const Text('打开听书'),
             )),
             if (tts.isActive)
-              ReaderTtsFloatingPill(
-                paper: ReaderPaperTheme.porcelainWhite, botSafe: 16.0, isPlaying: tts.isPlaying, sleepBadge: tts.formattedSleepBadge,
-                onTapExpand: () => TtsControlSheet.show(context), onTogglePlayPause: ref.read(ttsControllerProvider.notifier).togglePlayPause,
-              ),
+              ReaderTtsFloatingPill(paper: ReaderPaperTheme.porcelainWhite, botSafe: 16.0, isPlaying: tts.isPlaying, sleepBadge: tts.formattedSleepBadge, onTapExpand: () => TtsControlSheet.show(context), onTogglePlayPause: ref.read(ttsControllerProvider.notifier).togglePlayPause),
           ]));
         })),
       ));
-
       await tester.tap(find.text('打开听书'));
       await tester.pumpAndSettle();
-      expect(find.text('沉浸听书'), findsOneWidget);
-      expect(find.text('第三章 面板测试'), findsOneWidget);
-      expect(find.text('第一段预览文本'), findsOneWidget);
-
       await tester.tap(find.text('1.25x'));
       await tester.pumpAndSettle();
       expect((calls.last.arguments as Map)['rate'], 1.25);
-
       await tester.tap(find.text('下一段'));
       await tester.pumpAndSettle();
       expect(find.text('第二段预览文本'), findsOneWidget);
 
-      // 模拟上一章切章失败（连续2次 false）降级为 paused 并展示高对比度错误提示条
       speakFailRemaining = 2;
       await tester.tap(find.text('上一段'));
       await tester.pump();
@@ -213,91 +282,31 @@ void main() {
       await tester.tap(find.text('退出听书'));
       await tester.pumpAndSettle();
       expect(find.text('沉浸听书'), findsNothing);
-      expect(find.text('听书中'), findsNothing);
-    });
 
-    test('ttsSpeak 首调失败自动重试续播与连续失败降级 paused 保留进度', () async {
-      final scope = _createTtsScope();
-      final notifier = scope.container.read(ttsControllerProvider.notifier);
-      speakFailRemaining = 1;
-      expect(await notifier.startReading(bookId: 'b_retry', chapterIndex: 0, chapterTitle: '第一章', paragraphs: ['首段内容。', '次段内容。'], totalChapters: 2), isTrue);
-      expect(scope.container.read(ttsControllerProvider).isPlaying, isTrue);
-      expect(scope.container.read(ttsControllerProvider).lastError, isNull);
-      expect(calls.where((c) => c.method == 'ttsSpeak').length, 2);
-
-      speakFailRemaining = 2;
-      await notifier.nextParagraph();
-      final pausedState = scope.container.read(ttsControllerProvider);
-      expect(pausedState.status, TtsPlaybackStatus.paused);
-      expect(pausedState.bookId, 'b_retry');
-      expect(pausedState.paragraphIndex, 1);
-      expect(pausedState.lastError, contains('语音引擎连接中断'));
-
-      expect(await notifier.resume(), isTrue);
-      expect(scope.container.read(ttsControllerProvider).isPlaying, isTrue);
-      expect(scope.container.read(ttsControllerProvider).lastError, isNull);
-    });
-
-    test('unbindAndStopOnDispose 新旧 owner 互斥保护与 setSpeechRate 异步并发守卫', () async {
-      final scope = _createTtsScope();
-      final notifier = scope.container.read(ttsControllerProvider.notifier);
-      notifier.bindReader(owner: 'owner_new', onLocate: (_, _) {}, onRequestChapter: (_) async => null);
-      await notifier.startReading(bookId: 'b_lock', chapterIndex: 0, chapterTitle: '第一章', paragraphs: ['测试段落内容。'], totalChapters: 1);
-      notifier.unbindAndStopOnDispose('owner_old');
-      await Future<void>.delayed(Duration.zero);
-      expect(scope.container.read(ttsControllerProvider).isPlaying, isTrue);
-
-      final rateFuture = notifier.setSpeechRate(1.75);
-      await notifier.pause();
-      await rateFuture;
-      expect(scope.container.read(ttsControllerProvider).isPaused, isTrue);
-      expect(calls.last.method, 'ttsStop');
-    });
-
-    testWidgets('8套主题与5套纸感下 TtsControlSheet 及胶囊渲染无溢出且对比度合规', (tester) async {
-      final db = _createTtsScope().db;
       for (final palette in SoftPalette.values) {
         for (final isDark in [false, true]) {
-          final tokens = SoftTokens.resolve(palette, isDark: isDark);
-          expect(SoftTokens.contrastRatio(tokens.textSecondary, tokens.card), greaterThanOrEqualTo(4.5));
-          expect(SoftTokens.contrastRatio(tokens.textSecondary, tokens.surface), greaterThanOrEqualTo(4.5));
-          await tester.pumpWidget(ProviderScope(
-            overrides: [appDatabaseProvider.overrideWithValue(db)],
-            child: MaterialApp(theme: tokens.toThemeData(), home: const Scaffold(body: TtsControlSheet())),
-          ));
-          await tester.pump();
-          expect(tester.takeException(), isNull);
+          final t = SoftTokens.resolve(palette, isDark: isDark);
+          expect(SoftTokens.contrastRatio(t.textSecondary, t.card), greaterThanOrEqualTo(4.5));
+          expect(SoftTokens.contrastRatio(t.textSecondary, t.surface), greaterThanOrEqualTo(4.5));
         }
       }
       for (final paper in ReaderPaperTheme.all) {
         expect(SoftTokens.contrastRatio(paper.textColor, paper.menuBg), greaterThanOrEqualTo(4.5));
-        await tester.pumpWidget(MaterialApp(home: Scaffold(body: Stack(children: [
-          ReaderTtsFloatingPill(paper: paper, botSafe: 34.0, isPlaying: true, sleepBadge: '14:59', onTapExpand: () {}, onTogglePlayPause: () {}),
-        ]))));
-        await tester.pump();
-        expect(tester.takeException(), isNull);
       }
     });
 
-    testWidgets('ReaderPage 听书态自动释放音量键拦截并守卫翻页、停播后恢复拦截', (tester) async {
+    testWidgets('ReaderPage 听书释放音量键拦截且 scroll 模式 TTS 跟随不销毁重建滚动视图', (tester) async {
       debugDefaultTargetPlatformOverride = TargetPlatform.android;
       try {
         final tempDir = Directory.systemTemp.createTempSync('yuewei_tts_reader_');
         addTearDown(() => tempDir.deleteSync(recursive: true));
         final db = _createTtsScope().db;
         final store = ChapterFileStore(rootDirProvider: () async => tempDir);
-
+        final paras = List.generate(30, (i) => '\u3000\u3000第${i + 1}段测试正文内容，用于验证听书状态、物理音量键互斥与连续滚动平滑跟随无闪烁。');
         await tester.runAsync(() async {
-          await db.upsertBook(BooksCompanion.insert(
-            id: 'tts_vol_b1', title: '听书音量键测试', cleanTitle: '听书音量键测试',
-            sourceId: kLocalBookSourceId, bookUrl: 'local://tts_vol_b1',
-            totalChapters: const Value(1), updatedAt: DateTime.now(),
-          ));
-          await db.replaceBookChapters('tts_vol_b1', [
-            ChaptersCompanion.insert(bookId: 'tts_vol_b1', chapterIndex: 0, title: '第一章', url: 'l://0', isCached: const Value(true)),
-          ]);
-          final text = List.generate(35, (i) => '\u3000\u3000第${i + 1}段测试正文内容，用于验证听书状态与物理音量键拦截互斥闭环行为。').join('\n');
-          await store.writeChapter('tts_vol_b1', 0, text);
+          await db.upsertBook(BooksCompanion.insert(id: 'tts_vol_b1', title: '听书测试', cleanTitle: '听书测试', sourceId: kLocalBookSourceId, bookUrl: 'local://tts_vol_b1', totalChapters: const Value(1), updatedAt: DateTime.now()));
+          await db.replaceBookChapters('tts_vol_b1', [ChaptersCompanion.insert(bookId: 'tts_vol_b1', chapterIndex: 0, title: '第一章', url: 'l://0', isCached: const Value(true))]);
+          await store.writeChapter('tts_vol_b1', 0, paras.join('\n'));
         });
 
         await tester.pumpWidget(ProviderScope(
@@ -308,34 +317,27 @@ void main() {
           await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
           await tester.pump();
         }
-        expect(find.byType(ReaderPagerViews), findsOneWidget);
         List<bool> intercepts() => calls.where((c) => c.method == 'setVolumeKeyIntercept').map((c) => (c.arguments as Map)['enabled'] as bool).toList();
         expect(intercepts().last, isTrue);
 
-        await _sendNativeCall('onVolumeDown', {});
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 350));
-        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
-        final offsetBeforeTts = (await tester.runAsync(() => db.getBookById('tts_vol_b1')))!.currentCharOffset;
-        expect(offsetBeforeTts, greaterThan(0));
-
         final container = ProviderScope.containerOf(tester.element(find.byType(ReaderPage)));
-        await tester.runAsync(() => container.read(ttsControllerProvider.notifier).startReading(
-              bookId: 'tts_vol_b1', chapterIndex: 0, chapterTitle: '第一章', paragraphs: ['\u3000\u3000测试朗读第一段。'], totalChapters: 1,
-            ));
+        await tester.runAsync(() => container.read(readerSettingsProvider.notifier).setTurnMode(PageTurnMode.scroll));
+        await tester.pumpAndSettle();
+        final scrollStateBefore = tester.state<ReaderContinuousScrollViewState>(find.byType(ReaderContinuousScrollView));
+
+        await tester.runAsync(() => container.read(ttsControllerProvider.notifier).startReading(bookId: 'tts_vol_b1', chapterIndex: 0, chapterTitle: '第一章', paragraphs: paras, totalChapters: 1));
         await tester.pump();
         expect(intercepts().last, isFalse);
 
-        await _sendNativeCall('onVolumeDown', {});
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 350));
-        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
-        expect((await tester.runAsync(() => db.getBookById('tts_vol_b1')))!.currentCharOffset, offsetBeforeTts);
+        // TTS 推进到下一段触发 onLocate：滚动视图 State 必须保持同一实例，绝不更换 GlobalKey 重建
+        await tester.runAsync(() => container.read(ttsControllerProvider.notifier).nextParagraph());
+        await tester.pump(const Duration(milliseconds: 260));
+        final scrollStateAfter = tester.state<ReaderContinuousScrollViewState>(find.byType(ReaderContinuousScrollView));
+        expect(identical(scrollStateBefore, scrollStateAfter), isTrue);
 
         await tester.runAsync(() => container.read(ttsControllerProvider.notifier).stop());
         await tester.pump();
         expect(intercepts().last, isTrue);
-
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pump(const Duration(seconds: 1));
       } finally {

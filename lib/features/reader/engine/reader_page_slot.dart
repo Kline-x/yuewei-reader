@@ -18,8 +18,16 @@ class PageRenderItem {
   final int totalPagesInChapter;
   final String bookTitle;
 
+  int get _contentHash {
+    var h = page.lines.length;
+    for (final line in page.lines) {
+      h = Object.hash(h, line.text);
+    }
+    return h;
+  }
+
   String get cacheKey =>
-      '${chapterIndex}_${page.pageIndex}_${totalPagesInChapter}_${chapterTitle.hashCode}_${bookTitle.hashCode}';
+      '${chapterIndex}_${page.pageIndex}_${totalPagesInChapter}_${page.charStart}_${page.charEnd}_${chapterTitle.hashCode}_${bookTitle.hashCode}_$_contentHash';
 
   @override
   bool operator ==(Object other) {
@@ -53,4 +61,22 @@ class ChapterBlock {
   final int chapterIndex;
   final String chapterTitle;
   final List<String> paragraphs;
+}
+
+/// 连续滚动模式显式定位指令（每次切章/跳转递增 token，待新 blocks 渲染生效后安全重定位）
+@immutable
+class ScrollJumpCommand {
+  const ScrollJumpCommand({
+    required this.token,
+    required this.chapterIndex,
+    this.charOffset = 0,
+    this.landOnEnd = false,
+    this.animate = false,
+  });
+
+  final int token;
+  final int chapterIndex;
+  final int charOffset;
+  final bool landOnEnd;
+  final bool animate;
 }

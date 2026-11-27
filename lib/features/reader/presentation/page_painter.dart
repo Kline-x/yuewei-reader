@@ -64,12 +64,7 @@ class PagePainter extends CustomPainter {
       final titleTp = TextPainter(
         text: TextSpan(
           text: chapterTitle,
-          style: TextStyle(
-            fontSize: config.fontSize * 1.32,
-            height: 1.32,
-            fontWeight: FontWeight.w800,
-            color: theme.textColor,
-          ),
+          style: TypographyEngine.chapterHeadingStyle(config, theme.textColor),
         ),
         textDirection: TextDirection.ltr,
         maxLines: 2,
@@ -77,7 +72,7 @@ class PagePainter extends CustomPainter {
       )..layout(maxWidth: config.contentWidth);
       titleTp.paint(canvas, Offset(config.horizontalPadding, currentY));
       titleTp.dispose();
-      currentY += config.fontSize * 1.45 + 24.0;
+      currentY += TypographyEngine.measureHeadingHeight(chapterTitle, config);
     }
 
     final bodyStyle = TypographyEngine.bodyStyle(config, theme.textColor);

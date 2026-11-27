@@ -148,6 +148,64 @@ class ReaderScrollBottomFooter extends StatelessWidget {
 class ReaderScrollMetrics {
   const ReaderScrollMetrics._();
 
+  static Widget buildPrevChapterSliver({
+    required double topPadding,
+    required bool hasPrevChapter,
+    required double buttonHeight,
+    required ReaderPaperTheme theme,
+    required VoidCallback onRequestPrevChapter,
+  }) {
+    final metaStyle = TextStyle(
+      fontSize: 11.5,
+      color: theme.accent,
+      fontWeight: FontWeight.w500,
+    );
+    return SliverPadding(
+      padding: EdgeInsets.only(top: topPadding + 10.0),
+      sliver: SliverToBoxAdapter(
+        child: hasPrevChapter
+            ? SizedBox(
+                height: buttonHeight,
+                child: Center(
+                  child: TextButton(
+                    onPressed: onRequestPrevChapter,
+                    child: Text('点击加载上一章', style: metaStyle),
+                  ),
+                ),
+              )
+            : const SizedBox.shrink(),
+      ),
+    );
+  }
+
+  static Widget buildBottomHintSliver({
+    required TypographyConfig config,
+    required ReaderPaperTheme theme,
+    required bool hasNextChapter,
+  }) {
+    final metaStyle = TextStyle(
+      fontSize: 11.5,
+      color: theme.secondaryText,
+      fontWeight: FontWeight.w500,
+    );
+    return SliverPadding(
+      padding: EdgeInsets.fromLTRB(
+        config.horizontalPadding,
+        16.0,
+        config.horizontalPadding,
+        config.bottomPadding + 56.0,
+      ),
+      sliver: SliverToBoxAdapter(
+        child: Center(
+          child: Text(
+            hasNextChapter ? '上滑继续无缝阅读下一章' : '本章已是全书最后一章',
+            style: metaStyle,
+          ),
+        ),
+      ),
+    );
+  }
+
   static List<Widget> buildChapterBlockSlivers({
     required ChapterBlock block,
     required ScrollChapterLayout layout,

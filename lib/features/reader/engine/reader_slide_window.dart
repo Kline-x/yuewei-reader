@@ -33,6 +33,11 @@ class ReaderSlideWindow {
     if (configChanged) {
       _pagesMap.clear();
       _lastConfig = config;
+    } else {
+      _pagesMap.removeWhere(
+        (idx, _) =>
+            idx < activeChapterIndex - 2 || idx > activeChapterIndex + 2,
+      );
     }
 
     for (final idx in [

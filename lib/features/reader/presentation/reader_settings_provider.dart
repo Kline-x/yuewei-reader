@@ -62,13 +62,20 @@ class ReaderSettingsNotifier extends Notifier<ReaderSettingsState> {
   static const _kVolKey = 'reader_volume_key';
   static const _kKeepScreen = 'reader_keep_screen_on';
 
+  int _mutationGen = 0;
+  bool _disposed = false;
+
   @override
   ReaderSettingsState build() {
+    _disposed = false;
+    _mutationGen = 0;
+    ref.onDispose(() => _disposed = true);
     _load();
     return const ReaderSettingsState();
   }
 
   Future<void> _load() async {
+    final gen = _mutationGen;
     final db = ref.read(appDatabaseProvider);
     final fs = double.tryParse((await db.getPreference(_kFontSize)) ?? '');
     final sp = LineSpacingPreset.fromName(await db.getPreference(_kSpacing));
@@ -77,6 +84,7 @@ class ReaderSettingsNotifier extends Notifier<ReaderSettingsState> {
     final fSys = (await db.getPreference(_kFollowSys)) == 'true';
     final vol = (await db.getPreference(_kVolKey)) != 'false';
     final keep = (await db.getPreference(_kKeepScreen)) != 'false';
+    if (_disposed || gen != _mutationGen) return;
 
     state = ReaderSettingsState(
       fontSize: (fs ?? 19.0).clamp(14.0, 30.0),
@@ -90,12 +98,14 @@ class ReaderSettingsNotifier extends Notifier<ReaderSettingsState> {
   }
 
   Future<void> setFontSize(double size) async {
+    _mutationGen++;
     final clamped = size.clamp(14.0, 30.0);
     state = state.copyWith(fontSize: clamped);
     await ref.read(appDatabaseProvider).setPreference(_kFontSize, '$clamped');
   }
 
   Future<void> setSpacing(LineSpacingPreset preset) async {
+    _mutationGen++;
     state = state.copyWith(spacingPreset: preset);
     await ref
         .read(appDatabaseProvider)
@@ -103,36 +113,42 @@ class ReaderSettingsNotifier extends Notifier<ReaderSettingsState> {
   }
 
   Future<void> setTurnMode(PageTurnMode mode) async {
+    _mutationGen++;
     state = state.copyWith(turnMode: mode);
     await ref.read(appDatabaseProvider).setPreference(_kTurnMode, mode.name);
   }
 
   Future<void> setPaperTheme(ReaderPaperTheme theme) async {
+    _mutationGen++;
     state = state.copyWith(paperTheme: theme, followSystemTheme: false);
     final db = ref.read(appDatabaseProvider);
     await db.setPreference(_kPaperId, theme.id);
     await db.setPreference(_kFollowSys, 'false');
   }
 
-  /// 阅读器内快捷切换日间 / 夜间（绝不篡改外部全局主题设置！）
-  Future<void> toggleDarkQuick() async {
-    final target = state.paperTheme.isDark
+  /// 阅读器内快捷切换日间 / 夜间（按当前实际渲染态 effectiveTheme 取反，绝不篡改全局主题）
+  Future<void> toggleDarkQuick({required Brightness systemBrightness}) async {
+    final isCurrentlyDark = state.effectiveTheme(systemBrightness).isDark;
+    final target = isCurrentlyDark
         ? ReaderPaperTheme.porcelainWhite
         : ReaderPaperTheme.slateNight;
     await setPaperTheme(target);
   }
 
   Future<void> setFollowSystem(bool follow) async {
+    _mutationGen++;
     state = state.copyWith(followSystemTheme: follow);
     await ref.read(appDatabaseProvider).setPreference(_kFollowSys, '$follow');
   }
 
   Future<void> setVolumeKeyPaging(bool enabled) async {
+    _mutationGen++;
     state = state.copyWith(volumeKeyPaging: enabled);
     await ref.read(appDatabaseProvider).setPreference(_kVolKey, '$enabled');
   }
 
   Future<void> setKeepScreenOn(bool enabled) async {
+    _mutationGen++;
     state = state.copyWith(keepScreenOn: enabled);
     await ref
         .read(appDatabaseProvider)

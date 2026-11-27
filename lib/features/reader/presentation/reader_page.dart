@@ -18,13 +18,11 @@ import 'reader_settings_provider.dart';
 import 'reader_sheets_launcher.dart';
 import 'reader_tts_binding.dart';
 
-/// 沉浸纸感阅读器主视图（宿主机控制 + 翻页视口装配，≤ 350 行）
+part 'reader_page_body_builder.dart';
+
+/// 沉浸纸感阅读器主视图（宿主机控制 + 生命周期计时 + 翻页视口装配，≤ 350 行）
 class ReaderPage extends ConsumerStatefulWidget {
-  const ReaderPage({
-    super.key,
-    required this.bookId,
-    this.initialChapterIndex,
-  });
+  const ReaderPage({super.key, required this.bookId, this.initialChapterIndex});
 
   final String bookId;
   final int? initialChapterIndex;
@@ -33,42 +31,39 @@ class ReaderPage extends ConsumerStatefulWidget {
   ConsumerState<ReaderPage> createState() => _ReaderPageState();
 }
 
-class _ReaderPageState extends ConsumerState<ReaderPage> {
-  GlobalKey<ReaderPagerViewsState> _pagerKey = GlobalKey();
+class _ReaderPageState extends ConsumerState<ReaderPage>
+    with WidgetsBindingObserver {
+  final GlobalKey<ReaderPagerViewsState> _pagerKey = GlobalKey();
   late final ReaderSessionController _session;
   late final TtsController _ttsNotifier;
   late final Stream<List<Bookmark>> _bookmarksStream;
   StreamSubscription<VolumeKeyEvent>? _volumeSub;
 
-  int _pagerJumpEpoch = 0;
-  bool _menuVisible = false;
-  bool _sheetOpen = false;
-  bool? _lastIntercept;
-  bool? _lastKeepOn;
+  bool _menuVisible = false, _sheetOpen = false;
+  bool? _lastIntercept, _lastKeepOn;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     _volumeSub = HostBridge.instance.volumeKeyStream.listen(_onVolumeKey);
     _ttsNotifier = ref.read(ttsControllerProvider.notifier);
     final db = ref.read(appDatabaseProvider);
     _bookmarksStream = db.watchBookmarksByBook(widget.bookId);
-    _session = ReaderSessionController(
-      bookId: widget.bookId,
-      ref: ref,
-      db: db,
-      onNeedResetScroll: () {
-        if (_session.jumpSequence == _pagerJumpEpoch) {
-          _pagerKey.currentState?.scrollResetTop();
-        }
-      },
-    )..bootstrap(widget.initialChapterIndex);
-    ReaderTtsBinding.attach(owner: this, tts: _ttsNotifier, session: _session);
+    _session = ReaderSessionController(bookId: widget.bookId, ref: ref, db: db)
+      ..bootstrap(widget.initialChapterIndex);
+    ReaderTtsBinding.attach(
+      owner: this,
+      tts: _ttsNotifier,
+      session: _session,
+      onLocate: (chIdx, offset) => _locateReader(chIdx, offset, animate: true),
+    );
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _ttsNotifier.unbindAndStopOnDispose(this);
     _volumeSub?.cancel();
     HostBridge.instance.setVolumeKeyIntercept(false);
@@ -78,13 +73,23 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
     super.dispose();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    state == AppLifecycleState.resumed
+        ? _session.resumeReadingTimer()
+        : _session.pauseReadingTimer();
+  }
+
   void _syncHostControls(
     ReaderSettingsState settings, {
     required bool isTtsActive,
   }) {
-    // 听书活跃态主动释放物理音量键拦截，交还系统调节媒体音量
-    final allowIntercept =
-        settings.volumeKeyPaging && !_menuVisible && !_sheetOpen && !isTtsActive;
+    final allowIntercept = settings.volumeKeyPaging &&
+        !_menuVisible &&
+        !_sheetOpen &&
+        !isTtsActive &&
+        !_session.loading &&
+        _session.errorMsg == null;
     if (_lastIntercept != allowIntercept) {
       _lastIntercept = allowIntercept;
       HostBridge.instance.setVolumeKeyIntercept(allowIntercept);
@@ -100,6 +105,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
     final isTtsActive = tts.isActive && tts.bookId == widget.bookId;
     if (!mounted ||
         _session.loading ||
+        _session.errorMsg != null ||
         _menuVisible ||
         _sheetOpen ||
         isTtsActive) {
@@ -124,9 +130,51 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
     if (mounted) setState(() => _sheetOpen = false);
   }
 
+  Future<void> _locateReader(
+    int chapterIndex,
+    int charOffset, {
+    bool animate = false,
+  }) async {
+    final isScroll =
+        ref.read(readerSettingsProvider).turnMode == PageTurnMode.scroll;
+    final inLoadedBlocks = isScroll &&
+        !_session.loading &&
+        _session.errorMsg == null &&
+        _session.scrollBlocks.any((b) => b.chapterIndex == chapterIndex);
+    await _session.jumpToLocation(
+      chapterIndex,
+      charOffset,
+      animateScroll: animate,
+      emitScrollCommand: !inLoadedBlocks,
+    );
+    if (inLoadedBlocks && mounted) {
+      _pagerKey.currentState
+          ?.scrollToLocation(chapterIndex, charOffset, animate: animate);
+    }
+  }
+
   Future<void> _jumpToBookmarkOrHit(int chapterIndex, int charOffset) async {
     _setMenuVisible(false);
-    await _session.jumpToLocation(chapterIndex, charOffset);
+    await _locateReader(chapterIndex, charOffset);
+  }
+
+  Future<void> _handleSourceSwitched({
+    required Book? updatedBook,
+    required List<Chapter> updatedChapters,
+    required int jumpIndex,
+    required String ruleName,
+  }) async {
+    final curTts = ref.read(ttsControllerProvider);
+    if (curTts.isActive && curTts.bookId == widget.bookId) {
+      await _ttsNotifier.stop();
+    }
+    if (!mounted) return;
+    _pagerKey.currentState?.clearPictureCache();
+    _session.updateSourceData(updatedBook, updatedChapters);
+    _setMenuVisible(false);
+    await _session.loadChapter(jumpIndex);
+    if (!mounted) return;
+    AppFeedback.showToast(context, '已切换至 $ruleName');
   }
 
   @override
@@ -134,10 +182,8 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
     final settings = ref.watch(readerSettingsProvider);
     final tts = ref.watch(ttsControllerProvider);
     final ttsForBook = tts.isActive && tts.bookId == widget.bookId;
-    final paper =
-        settings.effectiveTheme(MediaQuery.platformBrightnessOf(context));
-    _syncHostControls(settings, isTtsActive: ttsForBook);
-
+    final systemBrightness = MediaQuery.platformBrightnessOf(context);
+    final paper = settings.effectiveTheme(systemBrightness);
     final overlayStyle =
         (paper.isDark ? SystemUiOverlayStyle.light : SystemUiOverlayStyle.dark)
             .copyWith(
@@ -160,181 +206,21 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
               final bookmarks = bookmarkSnap.data ?? const <Bookmark>[];
               return AnimatedBuilder(
                 animation: _session,
-                builder: (context, _) => LayoutBuilder(
-                  builder: (context, constraints) {
-                    if (_pagerJumpEpoch != _session.jumpSequence) {
-                      _pagerJumpEpoch = _session.jumpSequence;
-                      if (settings.turnMode == PageTurnMode.scroll) {
-                        _pagerKey = GlobalKey<ReaderPagerViewsState>();
-                      }
-                    }
-                    final media = MediaQuery.paddingOf(context);
-                    final topSafe = media.top > 0 ? media.top : 24.0;
-                    final botSafe = media.bottom > 0 ? media.bottom : 16.0;
-                    final config = TypographyConfig(
-                      fontSize: settings.fontSize,
-                      lineHeightRatio: settings.spacingPreset.ratio,
-                      viewportWidth: constraints.maxWidth,
-                      viewportHeight: constraints.maxHeight,
-                      topPadding: topSafe + 34.0,
-                      bottomPadding: botSafe + (ttsForBook ? 72.0 : 28.0),
-                    );
-                    _session.syncForBuild(config, settings.turnMode);
-                    final slots = _session.buildSlots();
-                    final isLocalBook =
-                        _session.book?.sourceId == kLocalBookSourceId;
-                    final isScrollMode =
-                        settings.turnMode == PageTurnMode.scroll;
-                    final isBookmarked =
-                        ReaderBookmarkHelper.findMatchingBookmark(
-                              bookmarks: bookmarks,
-                              chapterIndex: _session.chapterIndex,
-                              currentItem: slots.current,
-                              charAnchorOffset: _session.charAnchorOffset,
-                              isScrollMode: isScrollMode,
-                            ) !=
-                            null;
-
-                    return ReaderBodyView(
-                      pagerKey: _pagerKey,
-                      loading: _session.loading,
-                      errorMsg: _session.errorMsg,
-                      menuVisible: _menuVisible,
-                      turnMode: settings.turnMode,
-                      initialCharOffset: _session.charAnchorOffset,
+                builder: (context, _) {
+                  _syncHostControls(settings, isTtsActive: ttsForBook);
+                  return LayoutBuilder(
+                    builder: (context, constraints) => _buildBody(
+                      context: context,
+                      constraints: constraints,
+                      settings: settings,
+                      tts: tts,
+                      ttsForBook: ttsForBook,
+                      systemBrightness: systemBrightness,
                       paper: paper,
-                      config: config,
-                      topSafe: topSafe,
-                      botSafe: botSafe,
-                      currentItem: slots.current,
-                      prevItem: slots.prev,
-                      nextItem: slots.next,
-                      scrollBlocks: _session.scrollBlocks,
-                      chapterIndex: _session.chapterIndex,
-                      totalChapters: _session.chapters.length,
-                      chapterTitles: _session.chapterTitles,
-                      bookTitle: _session.book?.title ?? '',
-                      chapterTitle: _session.currentChapterTitle,
-                      inShelf: _session.book?.isInShelf ?? false,
-                      isBookmarked: isBookmarked,
-                      isLocalBook: isLocalBook,
-                      isTtsActive: ttsForBook,
-                      isTtsPlaying: tts.isPlaying,
-                      ttsSleepBadge: tts.formattedSleepBadge,
-                      onRetry: () => _session.loadChapter(_session.chapterIndex),
-                      onToggleMenu: () => _setMenuVisible(!_menuVisible),
-                      onCommitNext: _session.commitNext,
-                      onCommitPrev: _session.commitPrev,
-                      onNeedAppendNextChapter: _session.appendNextScrollChapter,
-                      onRequestPrevChapter: () => _session.loadChapter(
-                        _session.chapterIndex - 1,
-                        landOnLastPage: true,
-                      ),
-                      onScrollChapterProgress:
-                          _session.handleScrollChapterProgress,
-                      onBack: () => Navigator.of(context).pop(),
-                      onTapTts: () => ReaderTtsBinding.onTapHeadphone(
-                        context: context,
-                        ttsState: tts,
-                        ttsNotifier: _ttsNotifier,
-                        session: _session,
-                        currentItem: slots.current,
-                        isScrollMode: isScrollMode,
-                        setMenuVisible: _setMenuVisible,
-                        runWithGuard: _runWithSheetGuard,
-                      ),
-                      onToggleTtsPlayPause: _ttsNotifier.togglePlayPause,
-                      onToggleBookmark: () =>
-                          ReaderBookmarkHelper.toggleCurrentBookmark(
-                        context: context,
-                        db: _session.db,
-                        bookId: widget.bookId,
-                        chapterIndex: _session.chapterIndex,
-                        chapterTitle: _session.currentChapterTitle,
-                        existingBookmarks: bookmarks,
-                        currentItem: slots.current,
-                        paragraphs: _session.paragraphs,
-                        charAnchorOffset: _session.charAnchorOffset,
-                        isScrollMode: isScrollMode,
-                      ),
-                      onAddToShelf: () => ReaderSheetsLauncher.addToShelf(
-                        context: context,
-                        ref: ref,
-                        db: _session.db,
-                        book: _session.book,
-                        onBookUpdated: _session.updateBook,
-                      ),
-                      onOpenSource: () => ReaderSheetsLauncher.openSourceSheet(
-                        context: context,
-                        ref: ref,
-                        db: _session.db,
-                        book: _session.book,
-                        currentChapterIndex: _session.chapterIndex,
-                        currentChapterTitle: _session.currentChapterTitle,
-                        loader: _session.loader,
-                        window: _session.window,
-                        runWithGuard: _runWithSheetGuard,
-                        onSwitched: ({
-                          required updatedBook,
-                          required updatedChapters,
-                          required jumpIndex,
-                          required ruleName,
-                        }) async {
-                          if (!mounted) return;
-                          _session.updateSourceData(updatedBook, updatedChapters);
-                          _setMenuVisible(false);
-                          await _session.loadChapter(jumpIndex);
-                          if (!mounted) return;
-                          AppFeedback.showToast(this.context, '已切换至 $ruleName');
-                        },
-                      ),
-                      onOpenDownload: () =>
-                          ReaderSheetsLauncher.openDownloadSheet(
-                        context: context,
-                        bookId: widget.bookId,
-                        bookTitle: _session.book?.title ?? '',
-                        totalChapters: _session.chapters.length,
-                        currentChapterIndex: _session.chapterIndex,
-                        runWithGuard: _runWithSheetGuard,
-                      ),
-                      onJumpChapter: (idx) => _session.loadChapter(idx),
-                      onOpenCatalog: () => ReaderSheetsLauncher.openCatalogSheet(
-                        context: context,
-                        chapters: _session.chapters,
-                        currentChapterIndex: _session.chapterIndex,
-                        onSelectChapter: (idx) => _session.loadChapter(idx),
-                        runWithGuard: _runWithSheetGuard,
-                      ),
-                      onOpenBookmarks: () =>
-                          ReaderSheetsLauncher.openBookmarkSheet(
-                        context: context,
-                        db: _session.db,
-                        bookId: widget.bookId,
-                        currentChapterIndex: _session.chapterIndex,
-                        onSelectBookmark: _jumpToBookmarkOrHit,
-                        runWithGuard: _runWithSheetGuard,
-                      ),
-                      onOpenSearch: () =>
-                          ReaderSheetsLauncher.openInBookSearchSheet(
-                        context: context,
-                        bookId: widget.bookId,
-                        chapters: _session.chapters,
-                        fileStore: ref.read(chapterFileStoreProvider),
-                        isLocalBook: isLocalBook,
-                        onSelectHit: _jumpToBookmarkOrHit,
-                        runWithGuard: _runWithSheetGuard,
-                      ),
-                      onToggleDark: () => ref
-                          .read(readerSettingsProvider.notifier)
-                          .toggleDarkQuick(),
-                      onOpenTypography: () =>
-                          ReaderSheetsLauncher.openTypographySheet(
-                        context: context,
-                        runWithGuard: _runWithSheetGuard,
-                      ),
-                    );
-                  },
-                ),
+                      bookmarks: bookmarks,
+                    ),
+                  );
+                },
               );
             },
           ),
