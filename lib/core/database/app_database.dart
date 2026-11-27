@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:drift/drift.dart';
 import 'package:drift_flutter/drift_flutter.dart';
 import '../storage/chapter_file_store.dart';
@@ -21,11 +22,14 @@ class AppDatabase extends _$AppDatabase {
       : super(executor ?? _openConnection());
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
-        onCreate: (m) => m.createAll(),
+        onCreate: (m) async {
+          await m.createAll();
+          await _createV4Indexes();
+        },
         onUpgrade: (m, from, to) async {
           if (from < 2) {
             await m.addColumn(books, books.latestChapterTitle);
@@ -35,8 +39,20 @@ class AppDatabase extends _$AppDatabase {
             await m.addColumn(books, books.hasUnreadUpdate);
             await m.createTable(bookmarks);
           }
+          if (from < 4) {
+            await _createV4Indexes();
+          }
         },
       );
+
+  Future<void> _createV4Indexes() async {
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_bookmarks_book_id ON bookmarks (book_id)',
+    );
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_reading_sessions_date_key ON reading_sessions (date_key)',
+    );
+  }
 
   static QueryExecutor _openConnection() {
     return driftDatabase(name: 'yuewei_v2_db');
@@ -138,33 +154,77 @@ class AppDatabase extends _$AppDatabase {
     );
   }
 
+  static String formatDateKey(DateTime dt) =>
+      '${dt.year.toString().padLeft(4, '0')}-'
+      '${dt.month.toString().padLeft(2, '0')}-'
+      '${dt.day.toString().padLeft(2, '0')}';
+
   /// 记录阅读会话时长
   Future<void> recordReadingSeconds(String bookId, int seconds) async {
     if (seconds <= 0) return;
     final now = DateTime.now();
-    final key =
-        '${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
     await into(readingSessions).insert(
       ReadingSessionsCompanion.insert(
         bookId: bookId,
-        dateKey: key,
+        dateKey: formatDateKey(now),
         durationSeconds: seconds,
         createdAt: now,
       ),
     );
   }
 
-  /// 实时监听今日阅读分钟数
-  Stream<int> watchTodayReadingMinutes() {
-    final now = DateTime.now();
-    final key =
-        '${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
-    final query = select(readingSessions)
-      ..where((t) => t.dateKey.equals(key));
-    return query.watch().map((rows) {
-      final totalSec = rows.fold<int>(0, (sum, r) => sum + r.durationSeconds);
-      return totalSec ~/ 60;
-    });
+  /// 实时监听今日阅读分钟数（跨午夜自动刷新 dateKey 归零统计）
+  Stream<int> watchTodayReadingMinutes({DateTime Function()? nowProvider}) {
+    final clock = nowProvider ?? DateTime.now;
+    late final StreamController<int> controller;
+    StreamSubscription<List<ReadingSession>>? sub;
+    Timer? midnightTimer;
+    String? boundKey;
+    var epoch = 0;
+
+    void bindForToday() {
+      if (controller.isClosed) return;
+      final myEpoch = ++epoch;
+      final now = clock();
+      final key = formatDateKey(now);
+      boundKey = key;
+
+      sub?.cancel();
+      final query = select(readingSessions)
+        ..where((t) => t.dateKey.equals(key));
+      sub = query.watch().listen(
+        (rows) {
+          if (myEpoch != epoch || controller.isClosed) return;
+          if (formatDateKey(clock()) != boundKey) {
+            bindForToday();
+            return;
+          }
+          final totalSec = rows.fold<int>(0, (sum, r) => sum + r.durationSeconds);
+          controller.add(totalSec ~/ 60);
+        },
+        onError: controller.addError,
+      );
+
+      midnightTimer?.cancel();
+      final nextDay = DateTime(now.year, now.month, now.day + 1);
+      final delay = nextDay.difference(now) + const Duration(milliseconds: 50);
+      midnightTimer = Timer(
+        delay.isNegative ? const Duration(milliseconds: 50) : delay,
+        bindForToday,
+      );
+    }
+
+    controller = StreamController<int>(
+      onListen: bindForToday,
+      onCancel: () async {
+        epoch++;
+        midnightTimer?.cancel();
+        midnightTimer = null;
+        await sub?.cancel();
+        sub = null;
+      },
+    );
+    return controller.stream;
   }
 
   /// 实时监听历史总阅读秒数
@@ -221,6 +281,17 @@ class AppDatabase extends _$AppDatabase {
         .watch();
   }
 
+  static const String syncPrefsUpdatedAtKey = 'sync_prefs_updated_at';
+  static const String syncSourcesUpdatedAtKey = 'sync_sources_updated_at';
+
+  static bool isSyncablePreferenceKey(String key) =>
+      !key.startsWith('webdav_') &&
+      (key.startsWith('yuewei_theme_') ||
+          key.startsWith('yuewei_tts_') ||
+          key.startsWith('reader_') ||
+          key.startsWith('shelf_') ||
+          key.startsWith('tts_'));
+
   /// 读写偏好键值对
   Future<String?> getPreference(String key) async {
     final row = await (select(appPreferences)
@@ -229,10 +300,22 @@ class AppDatabase extends _$AppDatabase {
     return row?.value;
   }
 
-  Future<void> setPreference(String key, String value) async {
+  Future<void> setPreference(
+    String key,
+    String value, {
+    bool touchSyncTimestamp = true,
+  }) async {
     await into(appPreferences).insertOnConflictUpdate(
       AppPreferencesCompanion.insert(key: key, value: value),
     );
+    if (touchSyncTimestamp && isSyncablePreferenceKey(key)) {
+      await into(appPreferences).insertOnConflictUpdate(
+        AppPreferencesCompanion.insert(
+          key: syncPrefsUpdatedAtKey,
+          value: DateTime.now().toUtc().toIso8601String(),
+        ),
+      );
+    }
   }
 
   /// 搜索历史读写

@@ -25,15 +25,12 @@ class ShelfPage extends ConsumerStatefulWidget {
 
 class _ShelfPageState extends ConsumerState<ShelfPage>
     with WidgetsBindingObserver {
-  ShelfSortMode _sortMode = ShelfSortMode.lastRead;
-  bool _isGridView = false;
   bool _checkingUpdates = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _restorePrefs();
   }
 
   @override
@@ -54,27 +51,12 @@ class _ShelfPageState extends ConsumerState<ShelfPage>
     tab ? context.go(route) : context.push(route);
   }
 
-  Future<void> _restorePrefs() async {
-    final repo = ref.read(shelfRepositoryProvider);
-    final sort = await repo.getSortMode();
-    final grid = await repo.getIsGridView();
-    if (!mounted) return;
-    setState(() {
-      _sortMode = sort;
-      _isGridView = grid;
-    });
-  }
+  Future<void> _changeSort(ShelfSortMode mode) =>
+      ref.read(shelfViewPrefsProvider.notifier).setSortMode(mode);
 
-  Future<void> _changeSort(ShelfSortMode mode) async {
-    setState(() => _sortMode = mode);
-    await ref.read(shelfRepositoryProvider).saveSortMode(mode);
-  }
-
-  Future<void> _toggleGridMode() async {
+  Future<void> _toggleGridMode() {
     ref.read(swipeCoordinatorProvider).closeAll();
-    final next = !_isGridView;
-    setState(() => _isGridView = next);
-    await ref.read(shelfRepositoryProvider).saveIsGridView(next);
+    return ref.read(shelfViewPrefsProvider.notifier).toggleGridView();
   }
 
   Future<void> _removeBookWithUndo(Book book) async {
@@ -87,7 +69,7 @@ class _ShelfPageState extends ConsumerState<ShelfPage>
       context,
       message: '已将《${book.title}》移出书架',
       onUndo: () => repo.setInShelf(book.id, true),
-      onCommitted: () => repo.purgeBookData(book.id),
+      onCommitted: () => repo.purgeBookDataIfNotInShelf(book.id),
     );
   }
 
@@ -132,6 +114,7 @@ class _ShelfPageState extends ConsumerState<ShelfPage>
         db: db,
         sourceRepo: ref.read(sourceRepositoryProvider),
         crawler: ref.read(crawlerServiceProvider),
+        fileStore: ref.read(chapterFileStoreProvider),
       );
       final res = await checker.checkAll();
       if (!mounted) return;
@@ -152,6 +135,7 @@ class _ShelfPageState extends ConsumerState<ShelfPage>
     final tokens = SoftTokens.of(context);
     final db = ref.watch(appDatabaseProvider);
     final coordinator = ref.watch(swipeCoordinatorProvider);
+    final viewPrefs = ref.watch(shelfViewPrefsProvider);
 
     return SafeArea(
       bottom: false,
@@ -159,7 +143,7 @@ class _ShelfPageState extends ConsumerState<ShelfPage>
         stream: db.watchShelfBooks(),
         builder: (context, booksSnap) {
           final rawBooks = booksSnap.data ?? const <Book>[];
-          final books = ShelfRepository.sortBooks(rawBooks, _sortMode);
+          final books = ShelfRepository.sortBooks(rawBooks, viewPrefs.sortMode);
 
           return RefreshIndicator(
             color: tokens.accent,
@@ -170,7 +154,7 @@ class _ShelfPageState extends ConsumerState<ShelfPage>
               slivers: [
                 SliverToBoxAdapter(
                   child: ShelfHeaderBar(
-                    isGridView: _isGridView,
+                    isGridView: viewPrefs.isGridView,
                     onTapSearch: () => _go('/discover', tab: true),
                     onTapImport: () => _go('/import'),
                     onTapSources: () => _go('/sources'),
@@ -193,7 +177,7 @@ class _ShelfPageState extends ConsumerState<ShelfPage>
                       SoftSpacing.sm,
                     ),
                     child: ShelfSortBar(
-                      currentMode: _sortMode,
+                      currentMode: viewPrefs.sortMode,
                       onSelect: _changeSort,
                     ),
                   ),
@@ -234,7 +218,7 @@ class _ShelfPageState extends ConsumerState<ShelfPage>
                     ),
                   ),
                 )
-              else if (_isGridView)
+              else if (viewPrefs.isGridView)
                 SliverPadding(
                   padding: const EdgeInsets.fromLTRB(
                     SoftSpacing.xl,

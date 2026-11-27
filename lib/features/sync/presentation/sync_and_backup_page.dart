@@ -5,19 +5,18 @@ import 'package:intl/intl.dart';
 import '../../../app/providers.dart';
 import '../../../core/platform/host_bridge.dart';
 import '../../../design_system/components/ambient_background.dart';
-import '../../../design_system/components/soft_bottom_sheet.dart';
 import '../../../design_system/components/soft_button.dart';
 import '../../../design_system/components/soft_card.dart';
-import '../../../design_system/components/soft_text_field.dart';
 import '../../../design_system/feedback/app_feedback.dart';
 import '../../../design_system/tokens/soft_metrics.dart';
 import '../../../design_system/tokens/soft_tokens.dart';
 import '../../reader/presentation/reader_settings_provider.dart';
 import '../../tts/tts_controller.dart';
 import '../backup_snapshot_codec.dart';
+import 'sync_paste_restore_sheet.dart';
 import 'sync_webdav_card.dart';
 
-/// 本地全量备份恢复与 WebDAV 云同步中心（严控 <= 310 行）
+/// 本地全量备份恢复与 WebDAV 云同步中心（共享互斥忙态，严控 <= 260 行）
 class SyncAndBackupPage extends ConsumerStatefulWidget {
   const SyncAndBackupPage({super.key});
 
@@ -27,26 +26,15 @@ class SyncAndBackupPage extends ConsumerStatefulWidget {
 
 class _SyncAndBackupPageState extends ConsumerState<SyncAndBackupPage> {
   String? _localAction;
+  bool _webdavBusy = false;
 
-  bool get _isBusy => _localAction != null;
+  bool get _isBusy => _localAction != null || _webdavBusy;
 
   Future<void> _refreshSyncedPreferences() async {
     ref.invalidate(readerSettingsProvider);
     await ref.read(ttsControllerProvider.notifier).reloadSpeechRateFromPrefs();
-    if (!mounted) return;
-    final db = ref.read(appDatabaseProvider);
-    final rawMode = await db.getPreference('yuewei_theme_mode');
-    final rawPalette = await db.getPreference('yuewei_theme_palette');
-    if (!mounted) return;
-    if (rawMode != null) {
-      final mode = rawMode == 'light'
-          ? ThemeMode.light
-          : (rawMode == 'dark' ? ThemeMode.dark : ThemeMode.system);
-      await ref.read(themeConfigProvider.notifier).setMode(mode);
-    }
-    if (rawPalette != null) {
-      await ref.read(themeConfigProvider.notifier).setPalette(SoftPalette.fromName(rawPalette));
-    }
+    await ref.read(shelfViewPrefsProvider.notifier).reloadFromDb();
+    await ref.read(themeConfigProvider.notifier).reloadFromDb();
   }
 
   Future<void> _onRestoredSummary(BackupRestoreSummary s) async {
@@ -108,72 +96,20 @@ class _SyncAndBackupPageState extends ConsumerState<SyncAndBackupPage> {
   }
 
   Future<void> _openPasteRestoreSheet() async {
-    final ctrl = TextEditingController();
-    await SoftBottomSheet.show(
-      context,
-      title: '粘贴备份 JSON 恢复',
-      subtitle: '按最近阅读时间 LWW 无损合并，绝不倒退本地进度',
-      headerIcon: Icons.content_paste_go_rounded,
-      maxHeightFactor: 0.76,
-      builder: (ctx) => Padding(
-        padding: const EdgeInsets.all(SoftSpacing.xl),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            SoftTextField(
-              controller: ctrl,
-              hintText: '在此粘贴阅微导出的备份 JSON 内容…',
-              prefixIcon: null,
-              maxLines: 7,
-              radius: SoftRadius.subCard,
-              textInputAction: TextInputAction.newline,
-            ),
-            const SizedBox(height: SoftSpacing.md),
-            Row(children: [
-              Expanded(
-                child: SoftButton(
-                  label: '读取剪贴板',
-                  icon: Icons.content_paste_rounded,
-                  tone: SoftButtonTone.tonal,
-                  compact: true,
-                  onPressed: () async {
-                    final clip = await Clipboard.getData(Clipboard.kTextPlain);
-                    final text = clip?.text?.trim() ?? '';
-                    if (text.isEmpty) {
-                      if (ctx.mounted) AppFeedback.showToast(ctx, '剪贴板暂无文本内容', isError: true);
-                      return;
-                    }
-                    ctrl.text = text;
-                  },
-                ),
-              ),
-              const SizedBox(width: SoftSpacing.sm),
-              Expanded(
-                child: SoftButton(
-                  label: '解析并合并恢复',
-                  icon: Icons.restore_rounded,
-                  compact: true,
-                  onPressed: () async {
-                    try {
-                      final summary =
-                          await ref.read(backupSnapshotCodecProvider).mergeSnapshotJson(ctrl.text);
-                      if (ctx.mounted) Navigator.of(ctx).pop();
-                      await _onRestoredSummary(summary);
-                    } on FormatException catch (e) {
-                      if (ctx.mounted) AppFeedback.showToast(ctx, e.message, isError: true);
-                    } catch (e) {
-                      if (ctx.mounted) AppFeedback.showToast(ctx, '恢复失败：$e', isError: true);
-                    }
-                  },
-                ),
-              ),
-            ]),
-          ],
-        ),
-      ),
-    );
-    ctrl.dispose();
+    if (_isBusy) return;
+    setState(() => _localAction = 'restore_paste');
+    BackupRestoreSummary? summary;
+    try {
+      summary = await showPasteBackupRestoreSheet(
+        context,
+        onRestore: (raw) => ref.read(backupSnapshotCodecProvider).mergeSnapshotJson(raw),
+      );
+    } finally {
+      if (mounted) setState(() => _localAction = null);
+    }
+    if (summary != null) {
+      await _onRestoredSummary(summary);
+    }
   }
 
   @override
@@ -216,7 +152,14 @@ class _SyncAndBackupPageState extends ConsumerState<SyncAndBackupPage> {
                 children: [
                   _buildLocalBackupCard(tokens),
                   const SizedBox(height: SoftSpacing.lg),
-                  SyncWebdavCard(onRestored: _onRestoredSummary),
+                  SyncWebdavCard(
+                    onRestored: _onRestoredSummary,
+                    externalBusy: _localAction != null,
+                    onBusyChanged: (busy) {
+                      if (mounted) setState(() => _webdavBusy = busy);
+                    },
+                    onPreferencesUpdated: _refreshSyncedPreferences,
+                  ),
                 ],
               ),
             ),
@@ -295,6 +238,7 @@ class _SyncAndBackupPageState extends ConsumerState<SyncAndBackupPage> {
                 icon: Icons.paste_rounded,
                 tone: SoftButtonTone.tonal,
                 expand: true,
+                isLoading: _localAction == 'restore_paste',
                 onPressed: _isBusy ? null : _openPasteRestoreSheet,
               ),
             ),

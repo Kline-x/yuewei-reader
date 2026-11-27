@@ -1,63 +1,168 @@
 import 'package:flutter/material.dart';
 import '../../../core/database/app_database.dart';
+import '../../../design_system/components/soft_button.dart';
 import '../../../design_system/components/soft_card.dart';
 import '../../../design_system/tokens/soft_metrics.dart';
 import '../../../design_system/tokens/soft_tokens.dart';
 
-/// 目录章节列表单行组件（仅真实读过时显示「在读」角标）
+/// 书籍详情页顶部导航栏（返回、刷新元数据与换源/本地标签）
+class BookDetailTopBar extends StatelessWidget {
+  const BookDetailTopBar({
+    super.key,
+    required this.hasBook,
+    required this.isLocal,
+    required this.refreshingMeta,
+    required this.sourceName,
+    required this.onBack,
+    required this.onRefresh,
+    required this.onSwitchSource,
+  });
+
+  final bool hasBook;
+  final bool isLocal;
+  final bool refreshingMeta;
+  final String sourceName;
+  final VoidCallback onBack;
+  final VoidCallback? onRefresh;
+  final VoidCallback onSwitchSource;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = SoftTokens.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8.0, 6.0, 16.0, 6.0),
+      child: Row(
+        children: [
+          IconButton(
+            constraints: const BoxConstraints(minWidth: 44.0, minHeight: 44.0),
+            onPressed: onBack,
+            icon: Icon(
+              Icons.arrow_back_ios_new_rounded,
+              size: 19.0,
+              color: tokens.textPrimary,
+            ),
+          ),
+          const Spacer(),
+          if (hasBook && isLocal)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
+              decoration: BoxDecoration(
+                color: tokens.accentSoft,
+                borderRadius: BorderRadius.circular(SoftRadius.pill),
+              ),
+              child: Text(
+                '本地藏书',
+                style: SoftTypography.caption.copyWith(
+                  color: tokens.accent,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            )
+          else if (hasBook) ...[
+            IconButton(
+              tooltip: '刷新书籍信息',
+              constraints: const BoxConstraints(minWidth: 40.0, minHeight: 40.0),
+              onPressed: onRefresh,
+              icon: refreshingMeta
+                  ? SizedBox(
+                      width: 16.0,
+                      height: 16.0,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.0,
+                        color: tokens.accent,
+                      ),
+                    )
+                  : Icon(
+                      Icons.refresh_rounded,
+                      size: 20.0,
+                      color: tokens.textSecondary,
+                    ),
+            ),
+            const SizedBox(width: 4.0),
+            SoftButton(
+              label: sourceName.isNotEmpty ? sourceName : '切换书源',
+              icon: Icons.swap_horiz_rounded,
+              tone: SoftButtonTone.tonal,
+              compact: true,
+              onPressed: onSwitchSource,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// 目录章节列表单行组件（仅真实读过时显示「在读」角标，固定行高确保定位当前章像素级精准）
 class BookDetailChapterTile extends StatelessWidget {
   const BookDetailChapterTile({
     super.key,
     required this.chapter,
     required this.isCurrent,
     required this.onTap,
+    this.showDivider = false,
   });
+
+  static const double rowExtent = 50.0;
 
   final Chapter chapter;
   final bool isCurrent;
   final VoidCallback onTap;
+  final bool showDivider;
 
   @override
   Widget build(BuildContext context) {
     final tokens = SoftTokens.of(context);
-    return ListTile(
-      dense: true,
-      contentPadding: const EdgeInsets.symmetric(
-        horizontal: SoftSpacing.xl,
-        vertical: 2.0,
-      ),
-      title: Text(
-        chapter.title,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: SoftTypography.body.copyWith(
-          color: isCurrent ? tokens.accent : tokens.textPrimary,
-          fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w400,
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Expanded(
+          child: ListTile(
+            dense: true,
+            visualDensity: VisualDensity.compact,
+            contentPadding: const EdgeInsets.symmetric(horizontal: SoftSpacing.xl),
+            title: Text(
+              chapter.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: SoftTypography.body.copyWith(
+                color: isCurrent ? tokens.accent : tokens.textPrimary,
+                fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w400,
+              ),
+            ),
+            trailing: isCurrent
+                ? Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8.0,
+                      vertical: 2.0,
+                    ),
+                    decoration: BoxDecoration(
+                      color: tokens.accentSoft,
+                      borderRadius: BorderRadius.circular(SoftRadius.pill),
+                    ),
+                    child: Text(
+                      '在读',
+                      style: SoftTypography.micro.copyWith(color: tokens.accent),
+                    ),
+                  )
+                : (chapter.isCached
+                    ? Icon(
+                        Icons.offline_pin_rounded,
+                        size: 15.0,
+                        color: tokens.textTertiary,
+                      )
+                    : null),
+            onTap: onTap,
+          ),
         ),
-      ),
-      trailing: isCurrent
-          ? Container(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 8.0,
-                vertical: 2.0,
-              ),
-              decoration: BoxDecoration(
-                color: tokens.accentSoft,
-                borderRadius: BorderRadius.circular(SoftRadius.pill),
-              ),
-              child: Text(
-                '在读',
-                style: SoftTypography.micro.copyWith(color: tokens.accent),
-              ),
-            )
-          : (chapter.isCached
-              ? Icon(
-                  Icons.offline_pin_rounded,
-                  size: 15.0,
-                  color: tokens.textTertiary,
-                )
-              : null),
-      onTap: onTap,
+        if (showDivider)
+          Divider(
+            height: 1.0,
+            indent: SoftSpacing.xl,
+            endIndent: SoftSpacing.xl,
+            color: tokens.borderSubtle,
+          ),
+      ],
     );
   }
 }

@@ -77,9 +77,24 @@ class DownloadManager {
     // 若已有旧任务在运行，先原子作废上一代令牌并中断在途 HTTP
     cancelDownload(bookId);
 
+    // 同步分配新世代与取消令牌，避免首次 await 窗口内被并发重入踩踏
+    final gen = (_generations[bookId] ?? 0) + 1;
+    _generations[bookId] = gen;
+    final token = CancelToken();
+    _cancelTokens[bookId] = token;
+    bool isStale() => _generations[bookId] != gen || token.isCancelled;
+    void releaseTokenIfCurrent() {
+      if (identical(_cancelTokens[bookId], token)) {
+        _cancelTokens.remove(bookId);
+      }
+    }
+
     final book = await db.getBookById(bookId);
+    if (isStale()) return;
     final allChapters = await db.getChaptersByBook(bookId);
+    if (isStale()) return;
     if (book == null || allChapters.isEmpty) {
+      releaseTokenIfCurrent();
       _emit(
         DownloadProgressSnapshot(
           bookId: bookId,
@@ -95,7 +110,9 @@ class DownloadManager {
     }
 
     final rule = await sourceRepo.getRuleById(book.sourceId);
+    if (isStale()) return;
     if (rule == null) {
+      releaseTokenIfCurrent();
       _emit(
         DownloadProgressSnapshot(
           bookId: bookId,
@@ -118,6 +135,7 @@ class DownloadManager {
     final uncached = targets.where((c) => !c.isCached).toList();
 
     if (uncached.isEmpty) {
+      releaseTokenIfCurrent();
       _emit(
         DownloadProgressSnapshot(
           bookId: bookId,
@@ -130,11 +148,6 @@ class DownloadManager {
       );
       return;
     }
-
-    final gen = (_generations[bookId] ?? 0) + 1;
-    _generations[bookId] = gen;
-    final token = CancelToken();
-    _cancelTokens[bookId] = token;
 
     final queue = Queue<Chapter>.from(uncached);
     final total = targets.length;
@@ -156,7 +169,7 @@ class DownloadManager {
 
     Future<void> worker() async {
       while (queue.isNotEmpty) {
-        if (_generations[bookId] != gen || token.isCancelled) return;
+        if (isStale()) return;
         final ch = queue.removeFirst();
         try {
           final paragraphs = await crawler.fetchChapterParagraphs(
@@ -165,7 +178,7 @@ class DownloadManager {
             chapterTitle: ch.title,
             cancelToken: token,
           );
-          if (_generations[bookId] != gen || token.isCancelled) return;
+          if (isStale()) return;
 
           if (paragraphs.isEmpty) {
             failed++;
@@ -176,20 +189,23 @@ class DownloadManager {
               ch.chapterIndex,
               text,
             );
+            if (isStale()) return;
             await db.markChapterCached(
               bookId: bookId,
               chapterIndex: ch.chapterIndex,
               isCached: true,
               cachedBytes: bytes,
             );
+            if (isStale()) return;
             completed++;
             newlyFetched++;
           }
         } catch (_) {
-          if (_generations[bookId] != gen || token.isCancelled) return;
+          if (isStale()) return;
           failed++;
         }
 
+        if (isStale()) return;
         final sec = taskStopwatch.elapsedMilliseconds / 1000.0;
         final speed = sec > 0.05 ? newlyFetched / sec : 0.0;
         _emit(
@@ -209,7 +225,8 @@ class DownloadManager {
     await Future.wait(List.generate(concurrency, (_) => worker()));
     taskStopwatch.stop();
 
-    if (_generations[bookId] != gen || token.isCancelled) return;
+    if (isStale()) return;
+    releaseTokenIfCurrent();
 
     final DownloadTaskStatus finalStatus;
     String? errorMsg;
@@ -265,16 +282,21 @@ class DownloadManager {
     if (!_streamCtrl.isClosed) {
       _streamCtrl.add(snap);
     }
-    db.into(db.downloadTasks).insertOnConflictUpdate(
-          DownloadTasksCompanion.insert(
-            bookId: snap.bookId,
-            status: snap.status.name,
-            totalCount: Value(snap.total),
-            completedCount: Value(snap.completed),
-            failedCount: Value(snap.failed),
-            updatedAt: DateTime.now(),
-          ),
-        );
+    unawaited(
+      db
+          .into(db.downloadTasks)
+          .insertOnConflictUpdate(
+            DownloadTasksCompanion.insert(
+              bookId: snap.bookId,
+              status: snap.status.name,
+              totalCount: Value(snap.total),
+              completedCount: Value(snap.completed),
+              failedCount: Value(snap.failed),
+              updatedAt: DateTime.now(),
+            ),
+          )
+          .catchError((_) => 0),
+    );
   }
 
   void cancelAll() {
@@ -284,6 +306,9 @@ class DownloadManager {
   }
 
   void dispose() {
+    for (final bookId in _generations.keys.toList()) {
+      _generations[bookId] = (_generations[bookId] ?? 0) + 1;
+    }
     for (final t in _cancelTokens.values) {
       if (!t.isCancelled) t.cancel();
     }
