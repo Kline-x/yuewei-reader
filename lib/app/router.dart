@@ -25,8 +25,11 @@ final appRouterProvider = Provider<GoRouter>((ref) {
     initialLocation: '/shelf',
     routes: [
       StatefulShellRoute.indexedStack(
-        builder: (context, state, navigationShell) {
-          return RootShell(navigationShell: navigationShell);
+        pageBuilder: (context, state, navigationShell) {
+          return NoTransitionPage(
+            key: state.pageKey,
+            child: RootShell(navigationShell: navigationShell),
+          );
         },
         branches: [
           StatefulShellBranch(
@@ -180,24 +183,20 @@ class _RootShellState extends ConsumerState<RootShell> {
                   ignoring: keyboardVisible,
                   child: AnimatedSlide(
                     offset: keyboardVisible
-                        ? const Offset(0, 1.4)
+                        ? const Offset(0, 2.2)
                         : Offset.zero,
                     duration: const Duration(milliseconds: 220),
                     curve: Curves.easeOutCubic,
-                    child: AnimatedOpacity(
-                      opacity: keyboardVisible ? 0.0 : 1.0,
-                      duration: const Duration(milliseconds: 160),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const GlobalTtsMiniCapsule(),
-                          SublimeFloatingDock(
-                            items: _dockItems,
-                            currentIndex: widget.navigationShell.currentIndex,
-                            onTap: _onTabTap,
-                          ),
-                        ],
-                      ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const GlobalTtsMiniCapsule(),
+                        SublimeFloatingDock(
+                          items: _dockItems,
+                          currentIndex: widget.navigationShell.currentIndex,
+                          onTap: _onTabTap,
+                        ),
+                      ],
                     ),
                   ),
                 ),

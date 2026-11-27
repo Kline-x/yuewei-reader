@@ -109,6 +109,7 @@ class AppFeedback {
     required VoidCallback onUndo,
     required VoidCallback onCommitted,
     Duration duration = const Duration(seconds: 4),
+    double extraBottomClearance = 0.0,
   }) {
     final messenger = ScaffoldMessenger.maybeOf(context);
     if (messenger == null) {
@@ -129,7 +130,7 @@ class AppFeedback {
           18.0,
           0,
           18.0,
-          SoftSpacing.dockClearance - 8.0,
+          SoftSpacing.dockClearance - 8.0 + extraBottomClearance,
         ),
         backgroundColor: tokens.card,
         shape: RoundedRectangleBorder(

@@ -19,6 +19,13 @@ abstract final class SoftSpacing {
 
   /// 悬浮药丸底栏留白高度（含安全区外净空）
   static const double dockClearance = 104.0;
+
+  /// 全局悬浮听书胶囊活跃态额外抬升净空（56dp 胶囊 + 10dp 间距 + 14dp 缓冲）
+  static const double ttsCapsuleExtraClearance = 80.0;
+
+  /// 根据悬浮听书胶囊是否活跃动态计算滚动列表底部净空
+  static double bottomClearance({required bool hasTtsCapsule}) =>
+      dockClearance + (hasTtsCapsule ? ttsCapsuleExtraClearance : 0.0);
 }
 
 abstract final class SoftTypography {

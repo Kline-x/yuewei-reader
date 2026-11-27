@@ -310,14 +310,22 @@ void main() {
       expect(rootContainer.read(ttsControllerProvider).isReaderAttached, isFalse);
       expect(calls.where((c) => c.method == 'ttsStop').length, stopCountOnReader);
 
-      // 软键盘弹出时胶囊随底栏同步隐藏（透明度归零）
+      // 软键盘弹出时胶囊随底栏同步纯滑出隐藏且不响应点击（绝不套 AnimatedOpacity）
       tester.view.viewInsets = const FakeViewPadding(bottom: 600.0);
       addTearDown(tester.view.resetViewInsets);
       await tester.pumpAndSettle();
-      final dockOpacity = tester.widget<AnimatedOpacity>(
-        find.ancestor(of: find.byType(GlobalTtsMiniCapsule), matching: find.byType(AnimatedOpacity)),
+      final dockSlide = tester.widget<AnimatedSlide>(
+        find.ancestor(of: find.byType(GlobalTtsMiniCapsule), matching: find.byType(AnimatedSlide)),
       );
-      expect(dockOpacity.opacity, 0.0);
+      final dockIgnore = tester.widget<IgnorePointer>(
+        find.ancestor(of: find.byType(GlobalTtsMiniCapsule), matching: find.byType(IgnorePointer)).first,
+      );
+      expect(dockSlide.offset, const Offset(0, 2.2));
+      expect(dockIgnore.ignoring, isTrue);
+      expect(
+        find.ancestor(of: find.byType(BackdropFilter), matching: find.byType(AnimatedOpacity)),
+        findsNothing,
+      );
       tester.view.resetViewInsets();
       await tester.pumpAndSettle();
 

@@ -9,6 +9,7 @@ import '../../../design_system/feedback/app_feedback.dart';
 import '../../../design_system/tokens/soft_metrics.dart';
 import '../../../design_system/tokens/soft_tokens.dart';
 import '../../reader/presentation/reader_settings_provider.dart';
+import '../../tts/tts_controller.dart';
 import '../../update/app_update_dialog.dart';
 import '../../update/app_update_models.dart';
 import '../../update/app_update_service.dart';
@@ -80,6 +81,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     final themeConfig = ref.watch(themeConfigProvider);
     final readerCfg = ref.watch(readerSettingsProvider);
     final updateState = ref.watch(appUpdateControllerProvider);
+    final hasTtsCapsule =
+        ref.watch(ttsControllerProvider.select((s) => s.isActive));
     final caps = HostBridge.instance.capabilities;
 
     return SafeArea(
@@ -97,11 +100,11 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           stops: [0.0, 0.035, 1.0],
         ).createShader(bounds),
         child: ListView(
-          padding: const EdgeInsets.fromLTRB(
+          padding: EdgeInsets.fromLTRB(
             SoftSpacing.xl,
             SoftSpacing.md,
             SoftSpacing.xl,
-            SoftSpacing.dockClearance,
+            SoftSpacing.bottomClearance(hasTtsCapsule: hasTtsCapsule),
           ),
           children: [
             Text(

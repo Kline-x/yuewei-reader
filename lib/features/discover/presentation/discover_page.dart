@@ -10,6 +10,7 @@ import '../../../design_system/components/soft_text_field.dart';
 import '../../../design_system/tokens/soft_metrics.dart';
 import '../../../design_system/tokens/soft_tokens.dart';
 import '../../sources/domain/book_match_models.dart';
+import '../../tts/tts_controller.dart';
 import 'discover_sections.dart';
 
 /// 探索书海 & 多源聚合搜书页：
@@ -155,6 +156,10 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
   Widget build(BuildContext context) {
     final tokens = SoftTokens.of(context);
     final results = _aggregatedList;
+    final hasTtsCapsule =
+        ref.watch(ttsControllerProvider.select((s) => s.isActive));
+    final bottomClearance =
+        SoftSpacing.bottomClearance(hasTtsCapsule: hasTtsCapsule);
 
     return SafeArea(
       bottom: false,
@@ -220,22 +225,27 @@ class _DiscoverPageState extends ConsumerState<DiscoverPage> {
             child: !_hasSearched
                 ? DiscoverIdleSection(
                     db: ref.watch(appDatabaseProvider),
+                    bottomClearance: bottomClearance,
                     onSelectKeyword: (kw) {
                       _searchCtrl.text = kw;
                       _startSearch(kw);
                     },
                   )
                 : (results.isEmpty && !_searching)
-                    ? EmptyErrorView(
-                        icon: Icons.search_off_rounded,
-                        title: '未找到《$_lastQuery》',
-                        description:
-                            '当前 $_enabledSourceCount 个启用书源均未匹配到此书，可检查网络或在书源中心导入新书源。',
-                        actionLabel: '重新搜索',
-                        onAction: () => _startSearch(_lastQuery),
+                    ? Padding(
+                        padding: EdgeInsets.only(bottom: bottomClearance),
+                        child: EmptyErrorView(
+                          icon: Icons.search_off_rounded,
+                          title: '未找到《$_lastQuery》',
+                          description:
+                              '当前 $_enabledSourceCount 个启用书源均未匹配到此书，可检查网络或在书源中心导入新书源。',
+                          actionLabel: '重新搜索',
+                          onAction: () => _startSearch(_lastQuery),
+                        ),
                       )
                     : DiscoverResultsList(
                         results: results,
+                        bottomClearance: bottomClearance,
                         onTapBook: (book) {
                           _focusNode.unfocus();
                           context.push('/book', extra: book);

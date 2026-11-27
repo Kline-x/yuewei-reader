@@ -9,6 +9,7 @@ import '../../../design_system/components/soft_button.dart';
 import '../../../design_system/feedback/app_feedback.dart';
 import '../../../design_system/tokens/soft_metrics.dart';
 import '../../../design_system/tokens/soft_tokens.dart';
+import '../../tts/tts_controller.dart';
 import '../data/shelf_repository.dart';
 import '../data/shelf_update_checker.dart';
 import 'shelf_book_action_sheet.dart';
@@ -68,6 +69,9 @@ class _ShelfPageState extends ConsumerState<ShelfPage>
     AppFeedback.showUndoSnackBar(
       context,
       message: '已将《${book.title}》移出书架',
+      extraBottomClearance: ref.read(ttsControllerProvider).isActive
+          ? SoftSpacing.ttsCapsuleExtraClearance
+          : 0.0,
       onUndo: () => repo.setInShelf(book.id, true),
       onCommitted: () => repo.purgeBookDataIfNotInShelf(book.id),
     );
@@ -136,6 +140,10 @@ class _ShelfPageState extends ConsumerState<ShelfPage>
     final db = ref.watch(appDatabaseProvider);
     final coordinator = ref.watch(swipeCoordinatorProvider);
     final viewPrefs = ref.watch(shelfViewPrefsProvider);
+    final hasTtsCapsule =
+        ref.watch(ttsControllerProvider.select((s) => s.isActive));
+    final bottomClearance =
+        SoftSpacing.bottomClearance(hasTtsCapsule: hasTtsCapsule);
 
     return SafeArea(
       bottom: false,
@@ -194,9 +202,7 @@ class _ShelfPageState extends ConsumerState<ShelfPage>
                 SliverFillRemaining(
                   hasScrollBody: false,
                   child: Padding(
-                    padding: const EdgeInsets.only(
-                      bottom: SoftSpacing.dockClearance,
-                    ),
+                    padding: EdgeInsets.only(bottom: bottomClearance),
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
@@ -220,11 +226,11 @@ class _ShelfPageState extends ConsumerState<ShelfPage>
                 )
               else if (viewPrefs.isGridView)
                 SliverPadding(
-                  padding: const EdgeInsets.fromLTRB(
+                  padding: EdgeInsets.fromLTRB(
                     SoftSpacing.xl,
                     SoftSpacing.sm,
                     SoftSpacing.xl,
-                    SoftSpacing.dockClearance,
+                    bottomClearance,
                   ),
                   sliver: SliverGrid(
                     gridDelegate:
@@ -249,11 +255,11 @@ class _ShelfPageState extends ConsumerState<ShelfPage>
                 )
               else
                 SliverPadding(
-                  padding: const EdgeInsets.fromLTRB(
+                  padding: EdgeInsets.fromLTRB(
                     SoftSpacing.xl,
                     SoftSpacing.sm,
                     SoftSpacing.xl,
-                    SoftSpacing.dockClearance,
+                    bottomClearance,
                   ),
                   sliver: SliverList(
                     delegate: SliverChildBuilderDelegate(

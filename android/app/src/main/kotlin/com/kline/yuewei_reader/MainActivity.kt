@@ -1,5 +1,6 @@
 package com.kline.yuewei_reader
 
+import android.Manifest
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -10,6 +11,8 @@ import android.os.Looper
 import android.provider.OpenableColumns
 import android.view.KeyEvent
 import android.view.WindowManager
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -24,6 +27,7 @@ import java.util.concurrent.Executors
 class MainActivity : FlutterActivity() {
     companion object {
         private const val MAX_FONT_FILE_BYTES = 30L * 1024L * 1024L
+        private const val REQ_POST_NOTIFICATIONS = 4097
         private val mainHandler = Handler(Looper.getMainLooper())
 
         @Volatile
@@ -61,9 +65,37 @@ class MainActivity : FlutterActivity() {
     private val ioExecutor = Executors.newSingleThreadExecutor()
     private var ttsAndBackupHelper: NativeTtsAndBackupHelper? = null
     private var appUpdateHelper: NativeAppUpdateHelper? = null
+    private var requestedPostNotifications = false
 
     @Volatile
     private var volumeKeyInterceptEnabled: Boolean = false
+
+    private fun maybeRequestPostNotificationsPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || requestedPostNotifications) {
+            return
+        }
+        runOnUiThread {
+            if (requestedPostNotifications || isFinishing || isDestroyed) {
+                return@runOnUiThread
+            }
+            requestedPostNotifications = true
+            try {
+                val granted = ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+                if (!granted) {
+                    ActivityCompat.requestPermissions(
+                        this,
+                        arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                        REQ_POST_NOTIFICATIONS
+                    )
+                }
+            } catch (_: Exception) {
+                // 用户拒绝或系统限制时静默优雅降级，不阻塞媒体前台服务运行
+            }
+        }
+    }
 
     private fun isAnyPickerBusy(helper: NativeTtsAndBackupHelper?): Boolean {
         return pendingFilePickerResult != null ||
@@ -209,6 +241,7 @@ class MainActivity : FlutterActivity() {
                     val isPlaying = call.argument<Boolean>("isPlaying") == true
                     val canPrev = call.argument<Boolean>("canPrev") == true
                     val canNext = call.argument<Boolean>("canNext") == true
+                    maybeRequestPostNotificationsPermission()
                     val ok = TtsForegroundService.startOrUpdate(
                         context = this,
                         bookTitle = bookTitle,

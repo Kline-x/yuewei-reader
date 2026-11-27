@@ -26,15 +26,12 @@ class GlobalTtsMiniCapsule extends ConsumerWidget {
       transitionBuilder: (child, animation) => SizeTransition(
         sizeFactor: animation,
         alignment: Alignment.bottomCenter,
-        child: FadeTransition(
-          opacity: animation,
-          child: SlideTransition(
-            position: Tween<Offset>(
-              begin: const Offset(0, 0.35),
-              end: Offset.zero,
-            ).animate(animation),
-            child: child,
-          ),
+        child: SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(0, 0.35),
+            end: Offset.zero,
+          ).animate(animation),
+          child: child,
         ),
       ),
       child: active

@@ -12,16 +12,18 @@ class DiscoverIdleSection extends StatelessWidget {
     super.key,
     required this.db,
     required this.onSelectKeyword,
+    this.bottomClearance = SoftSpacing.dockClearance,
   });
 
   final AppDatabase db;
   final ValueChanged<String> onSelectKeyword;
+  final double bottomClearance;
 
   @override
   Widget build(BuildContext context) {
     final tokens = SoftTokens.of(context);
     return ListView(
-      padding: const EdgeInsets.fromLTRB(SoftSpacing.xl, SoftSpacing.md, SoftSpacing.xl, SoftSpacing.dockClearance),
+      padding: EdgeInsets.fromLTRB(SoftSpacing.xl, SoftSpacing.md, SoftSpacing.xl, bottomClearance),
       children: [
         StreamBuilder<List<SearchHistoryData>>(
           stream: db.watchSearchHistory(),
@@ -85,20 +87,22 @@ class DiscoverResultsList extends StatelessWidget {
     super.key,
     required this.results,
     required this.onTapBook,
+    this.bottomClearance = SoftSpacing.dockClearance,
   });
 
   final List<AggregatedBookMatch> results;
   final ValueChanged<AggregatedBookMatch> onTapBook;
+  final double bottomClearance;
 
   @override
   Widget build(BuildContext context) {
     final tokens = SoftTokens.of(context);
     return ListView.separated(
-      padding: const EdgeInsets.fromLTRB(
+      padding: EdgeInsets.fromLTRB(
         SoftSpacing.xl,
         SoftSpacing.md,
         SoftSpacing.xl,
-        SoftSpacing.dockClearance,
+        bottomClearance,
       ),
       itemCount: results.length,
       separatorBuilder: (_, _) => const SizedBox(height: SoftSpacing.md),
