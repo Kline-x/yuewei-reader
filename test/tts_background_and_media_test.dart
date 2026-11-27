@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:drift/drift.dart' show Value, driftRuntimeOptions;
 import 'package:drift/native.dart';
@@ -29,6 +30,15 @@ Future<void> _sendNativeCall(String method, Map<String, dynamic> args) async {
       .handlePlatformMessage(_channel.name, data, (_) {});
 }
 
+String _lastSpeakUid(List<MethodCall> calls) =>
+    (calls.lastWhere((c) => c.method == 'ttsSpeak').arguments as Map)['utteranceId'] as String;
+
+Future<void> _waitFor(FutureOr<bool> Function() cond) async {
+  for (var i = 0; i < 300 && !await cond(); i++) {
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+}
+
 class _StubCrawlerService extends SourceCrawlerService {
   _StubCrawlerService(this._chaptersByUrl) : super(httpClient: AppHttpClient());
   final Map<String, List<String>> _chaptersByUrl;
@@ -58,11 +68,7 @@ BookSourceRule _buildTestRule(String id) => BookSourceRule(
         detailUrl: RuleField(selector: 'a', attr: 'href'),
       ),
       detail: const DetailRuleSpec(),
-      toc: const TocRuleSpec(
-        item: '.toc li',
-        title: RuleField(selector: 'a'),
-        url: RuleField(selector: 'a', attr: 'href'),
-      ),
+      toc: const TocRuleSpec(item: '.toc li', title: RuleField(selector: 'a'), url: RuleField(selector: 'a', attr: 'href')),
       chapter: const ChapterRuleSpec(content: RuleField(selector: '#content')),
     );
 
@@ -75,28 +81,15 @@ Future<void> _seedBookWith3Chapters({
 }) async {
   if (includeSource) {
     final rule = _buildTestRule(sourceId);
-    await db.into(db.bookSources).insertOnConflictUpdate(
-          BookSourcesCompanion.insert(
-            id: sourceId,
-            name: rule.name,
-            baseUrl: rule.baseUrl,
-            ruleJson: rule.toJsonString(),
-          ),
-        );
+    await db.into(db.bookSources).insertOnConflictUpdate(BookSourcesCompanion.insert(
+      id: sourceId, name: rule.name, baseUrl: rule.baseUrl, ruleJson: rule.toJsonString(),
+    ));
   }
-  await db.upsertBook(
-    BooksCompanion.insert(
-      id: bookId,
-      title: '凡人修仙传',
-      cleanTitle: '凡人修仙传',
-      author: const Value('忘语'),
-      sourceId: sourceId,
-      bookUrl: 'https://example.com/$bookId',
-      totalChapters: const Value(3),
-      isInShelf: const Value(true),
-      updatedAt: DateTime.now(),
-    ),
-  );
+  await db.upsertBook(BooksCompanion.insert(
+    id: bookId, title: '凡人修仙传', cleanTitle: '凡人修仙传',
+    author: const Value('忘语'), sourceId: sourceId, bookUrl: 'https://example.com/$bookId',
+    totalChapters: const Value(3), isInShelf: const Value(true), updatedAt: DateTime.now(),
+  ));
   await db.replaceBookChapters(bookId, [
     ChaptersCompanion.insert(bookId: bookId, chapterIndex: 0, title: '第一章 七玄门', url: 'https://example.com/c0', isCached: const Value(true)),
     ChaptersCompanion.insert(bookId: bookId, chapterIndex: 1, title: '第二章 墨大夫', url: 'https://example.com/c1', isCached: const Value(true)),
@@ -163,17 +156,15 @@ void main() {
       expect(calls.where((c) => c.method == 'clearMediaSession'), isEmpty);
 
       // 脱离后收到 onTtsDone：章内推进段落并写库
-      final uid0 = (calls.last.arguments as Map)['utteranceId'] as String;
-      await _sendNativeCall('onTtsDone', {'utteranceId': uid0});
-      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await _sendNativeCall('onTtsDone', {'utteranceId': _lastSpeakUid(calls)});
+      await _waitFor(() async => container.read(ttsControllerProvider).paragraphIndex == 1 && (await db.getBookById('b_bg'))?.currentCharOffset == TtsController.charOffsetOfParagraph(ch0, 1));
       expect(container.read(ttsControllerProvider).paragraphIndex, 1);
       var savedBook = await db.getBookById('b_bg');
       expect((savedBook?.currentChapterIndex, savedBook?.currentCharOffset), (0, TtsController.charOffsetOfParagraph(ch0, 1)));
 
       // 章末再收到 onTtsDone：后台从磁盘缓存加载第二章并更新 Books 进度
-      final uid1 = (calls.last.arguments as Map)['utteranceId'] as String;
-      await _sendNativeCall('onTtsDone', {'utteranceId': uid1});
-      await Future<void>.delayed(const Duration(milliseconds: 30));
+      await _sendNativeCall('onTtsDone', {'utteranceId': _lastSpeakUid(calls)});
+      await _waitFor(() async => container.read(ttsControllerProvider).chapterIndex == 1 && (await db.getBookById('b_bg'))?.currentChapterIndex == 1);
       var st = container.read(ttsControllerProvider);
       expect((st.chapterIndex, st.chapterTitle, st.paragraphIndex, st.currentParagraphText), (1, '第二章 墨大夫', 0, '墨大夫传授口诀。'));
       savedBook = await db.getBookById('b_bg');
@@ -181,9 +172,8 @@ void main() {
 
       // 跳至第二章末段并播完，触发在线抓取第三章写盘并标记 isCached
       await notifier.nextParagraph();
-      final uid2 = (calls.last.arguments as Map)['utteranceId'] as String;
-      await _sendNativeCall('onTtsDone', {'utteranceId': uid2});
-      await Future<void>.delayed(const Duration(milliseconds: 40));
+      await _sendNativeCall('onTtsDone', {'utteranceId': _lastSpeakUid(calls)});
+      await _waitFor(() async => container.read(ttsControllerProvider).chapterIndex == 2 && (await db.getChaptersByBook('b_bg'))[2].isCached);
       st = container.read(ttsControllerProvider);
       expect((st.chapterIndex, st.chapterTitle, st.currentParagraphText), (2, '第三章 掌天瓶', '神秘绿液现世。'));
       expect(crawler.fetchedUrls, ['https://example.com/c2']);
@@ -191,9 +181,8 @@ void main() {
       expect(chRows[2].isCached, isTrue);
 
       // 最后一章自然播完触发 stop 与 clearMediaSession
-      final uid3 = (calls.last.arguments as Map)['utteranceId'] as String;
-      await _sendNativeCall('onTtsDone', {'utteranceId': uid3});
-      await Future<void>.delayed(const Duration(milliseconds: 30));
+      await _sendNativeCall('onTtsDone', {'utteranceId': _lastSpeakUid(calls)});
+      await _waitFor(() => container.read(ttsControllerProvider).status == TtsPlaybackStatus.idle && calls.any((c) => c.method == 'clearMediaSession'));
       expect(container.read(ttsControllerProvider).status, TtsPlaybackStatus.idle);
       expect(calls.where((c) => c.method == 'clearMediaSession').length, 1);
     });
@@ -211,29 +200,29 @@ void main() {
       expect((mediaArgs['bookTitle'], mediaArgs['author'], mediaArgs['isPlaying'], mediaArgs['canPrev'], mediaArgs['canNext']), ('诡秘之主', '爱潜水的乌贼', true, false, true));
 
       await _sendNativeCall('onMediaCommand', {'action': 'pause'});
-      await Future<void>.delayed(Duration.zero);
+      await _waitFor(() => container.read(ttsControllerProvider).isPaused);
       expect(container.read(ttsControllerProvider).isPaused, isTrue);
       mediaArgs = calls.where((c) => c.method == 'updateMediaSession').last.arguments as Map;
       expect(mediaArgs['isPlaying'], isFalse);
 
       await _sendNativeCall('onMediaCommand', {'action': 'play'});
-      await Future<void>.delayed(Duration.zero);
+      await _waitFor(() => container.read(ttsControllerProvider).isPlaying);
       expect(container.read(ttsControllerProvider).isPlaying, isTrue);
 
       await _sendNativeCall('onMediaCommand', {'action': 'next'});
-      await Future<void>.delayed(Duration.zero);
+      await _waitFor(() => container.read(ttsControllerProvider).paragraphIndex == 1);
       expect(container.read(ttsControllerProvider).paragraphIndex, 1);
 
       await _sendNativeCall('onMediaCommand', {'action': 'prev'});
-      await Future<void>.delayed(Duration.zero);
+      await _waitFor(() => container.read(ttsControllerProvider).paragraphIndex == 0);
       expect(container.read(ttsControllerProvider).paragraphIndex, 0);
 
       await _sendNativeCall('onMediaCommand', {'action': 'toggle'});
-      await Future<void>.delayed(Duration.zero);
+      await _waitFor(() => container.read(ttsControllerProvider).isPaused);
       expect(container.read(ttsControllerProvider).isPaused, isTrue);
 
       await _sendNativeCall('onMediaCommand', {'action': 'stop'});
-      await Future<void>.delayed(Duration.zero);
+      await _waitFor(() => container.read(ttsControllerProvider).status == TtsPlaybackStatus.idle && calls.any((c) => c.method == 'clearMediaSession'));
       expect(container.read(ttsControllerProvider).status, TtsPlaybackStatus.idle);
       expect(calls.where((c) => c.method == 'clearMediaSession').length, 1);
     });
