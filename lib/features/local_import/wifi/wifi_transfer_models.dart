@@ -12,15 +12,39 @@ class WifiReceivedItem {
     required this.itemCount,
     required this.receivedAt,
     this.bookId,
+    this.fontFamily,
   });
 
   final String fileName;
-  final String kind; // 'book' or 'source'
+  final String kind; // 'book', 'source' or 'font'
   final String displayTitle;
   final int itemCount;
   final DateTime receivedAt;
   final String? bookId;
+  final String? fontFamily;
 }
+
+/// Wi-Fi 传书自定义字体导入结果
+@immutable
+class WifiImportedFont {
+  const WifiImportedFont({
+    required this.id,
+    required this.displayName,
+    required this.fontFamily,
+    required this.fileSizeBytes,
+  });
+
+  final String id;
+  final String displayName;
+  final String fontFamily;
+  final int fileSizeBytes;
+}
+
+/// Wi-Fi 传书自定义字体导入回调签名
+typedef CustomFontImporter = Future<WifiImportedFont> Function(
+  String fileName,
+  List<int> bytes,
+);
 
 /// 枚举并按局域网可达优先级排序 IPv4 地址（192.168. > 10. > 172.16-31.）
 Future<List<String>> resolveWifiLanIps() async {

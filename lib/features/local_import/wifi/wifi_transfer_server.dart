@@ -10,13 +10,15 @@ import '../engine/charset_and_txt_parser.dart';
 import 'wifi_transfer_models.dart';
 import 'wifi_web_page_html.dart';
 
-export 'wifi_transfer_models.dart' show WifiReceivedItem;
+export 'wifi_transfer_models.dart'
+    show WifiReceivedItem, WifiImportedFont, CustomFontImporter;
 
 /// 局域网 Wi-Fi 传书轻量 HTTP 服务（同源安全无宽泛 CORS + 4 位随机配对码鉴权）
 class WifiTransferServer {
   WifiTransferServer({
     required this.localImportService,
     required this.sourceRepository,
+    this.customFontImporter,
     this.preferredPort = 18680,
     this.maxUploadBytesLimit = maxUploadBytes,
   });
@@ -25,6 +27,7 @@ class WifiTransferServer {
 
   final LocalImportService localImportService;
   final SourceRepository sourceRepository;
+  final CustomFontImporter? customFontImporter;
   final int preferredPort;
   final int maxUploadBytesLimit;
 
@@ -262,9 +265,46 @@ class WifiTransferServer {
       return;
     }
 
+    if (ext == '.ttf' || ext == '.otf') {
+      if (customFontImporter == null) {
+        await _sendJson(res, HttpStatus.notImplemented, {
+          'ok': false,
+          'error': '当前未启用字体导入服务',
+        });
+        return;
+      }
+      try {
+        final imported = await customFontImporter!(fileName, bytes);
+        _emitItem(
+          WifiReceivedItem(
+            fileName: fileName,
+            kind: 'font',
+            displayTitle: imported.displayName,
+            itemCount: 1,
+            receivedAt: DateTime.now(),
+            fontFamily: imported.fontFamily,
+          ),
+        );
+        await _sendJson(res, HttpStatus.ok, {
+          'ok': true,
+          'kind': 'font',
+          'fontId': imported.id,
+          'displayName': imported.displayName,
+          'fontFamily': imported.fontFamily,
+          'message': '收到字体「${imported.displayName}」',
+        });
+      } on FormatException catch (e) {
+        await _sendJson(res, HttpStatus.badRequest, {
+          'ok': false,
+          'error': e.message,
+        });
+      }
+      return;
+    }
+
     await _sendJson(res, HttpStatus.unsupportedMediaType, {
       'ok': false,
-      'error': '仅支持 .txt、.epub 书籍或 .json 书源规则',
+      'error': '仅支持 .txt、.epub 书籍、.json 书源规则或 .ttf、.otf 字体',
     });
   }
 

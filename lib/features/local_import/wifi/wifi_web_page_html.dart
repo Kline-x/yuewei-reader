@@ -115,10 +115,10 @@ const String kWifiTransferHtml = r'''<!DOCTYPE html>
       <span class="token-tip" id="tokenTip">打开手机端一键链接将自动填充</span>
     </div>
     <div class="dropzone" id="dropzone">
-      <div class="drop-title">拖拽书籍或书源到此处，或点击浏览文件</div>
-      <div class="drop-hint">支持 .txt / .epub 电子书，以及 .json（Legado 书源规则），单文件上限 120MB</div>
+      <div class="drop-title">拖拽书籍、书源或字体到此处，或点击浏览文件</div>
+      <div class="drop-hint">支持 .txt / .epub 电子书、.json 书源规则，以及 .ttf / .otf 字体（字体上限 30MB）</div>
       <button class="btn" type="button" id="pickBtn">选择本地文件</button>
-      <input type="file" id="fileInput" multiple accept=".txt,.epub,.json" hidden />
+      <input type="file" id="fileInput" multiple accept=".txt,.epub,.json,.ttf,.otf" hidden />
     </div>
   </section>
   <section class="card">
@@ -239,9 +239,13 @@ const String kWifiTransferHtml = r'''<!DOCTYPE html>
           const resp = JSON.parse(xhr.responseText || '{}');
           if (xhr.status >= 200 && xhr.status < 300 && resp.ok) {
             badge.className = 'badge ok';
-            badge.textContent = resp.kind === 'source'
-              ? ('导入 ' + resp.count + ' 条书源')
-              : ('已入架《' + resp.title + '》· ' + resp.chapters + ' 章');
+            if (resp.kind === 'source') {
+              badge.textContent = '导入 ' + resp.count + ' 条书源';
+            } else if (resp.kind === 'font') {
+              badge.textContent = resp.message || ('收到字体《' + (resp.displayName || file.name) + '》');
+            } else {
+              badge.textContent = '已入架《' + resp.title + '》· ' + resp.chapters + ' 章';
+            }
             refreshStatus();
           } else {
             badge.className = 'badge err';

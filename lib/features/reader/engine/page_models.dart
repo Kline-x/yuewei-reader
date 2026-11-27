@@ -35,6 +35,23 @@ enum LineSpacingPreset {
   }
 }
 
+/// 阅读器版式模式（自适应宽度 / 强制单页 / 强制双页）
+enum ReaderLayoutMode {
+  auto('自动'),
+  single('单页'),
+  dual('双页');
+
+  const ReaderLayoutMode(this.label);
+  final String label;
+
+  static ReaderLayoutMode fromName(String? raw) {
+    return ReaderLayoutMode.values.firstWhere(
+      (e) => e.name == raw,
+      orElse: () => ReaderLayoutMode.auto,
+    );
+  }
+}
+
 /// 5 款经严格 WCAG 校验的护眼纸感阅读色板
 @immutable
 class ReaderPaperTheme {
@@ -141,6 +158,8 @@ class TypographyConfig {
     this.horizontalPadding = 22.0,
     this.topPadding = 52.0,
     this.bottomPadding = 38.0,
+    this.fontFamily,
+    this.indentFirstLine = true,
   });
 
   final double fontSize;
@@ -152,6 +171,8 @@ class TypographyConfig {
   final double horizontalPadding;
   final double topPadding;
   final double bottomPadding;
+  final String? fontFamily;
+  final bool indentFirstLine;
 
   double get lineHeight => fontSize * lineHeightRatio;
   double get contentWidth =>
@@ -170,7 +191,9 @@ class TypographyConfig {
         other.viewportHeight == viewportHeight &&
         other.horizontalPadding == horizontalPadding &&
         other.topPadding == topPadding &&
-        other.bottomPadding == bottomPadding;
+        other.bottomPadding == bottomPadding &&
+        other.fontFamily == fontFamily &&
+        other.indentFirstLine == indentFirstLine;
   }
 
   @override
@@ -184,6 +207,8 @@ class TypographyConfig {
         horizontalPadding,
         topPadding,
         bottomPadding,
+        fontFamily,
+        indentFirstLine,
       );
 }
 
