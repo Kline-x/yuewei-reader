@@ -60,6 +60,36 @@ class TypographyEngine {
     );
   }
 
+  /// 供引擎与画笔完全一致使用的章标题样式
+  static TextStyle chapterHeadingStyle(TypographyConfig config, Color color) {
+    return TextStyle(
+      fontSize: config.fontSize * 1.32,
+      height: 1.32,
+      fontWeight: FontWeight.w800,
+      color: color,
+    );
+  }
+
+  /// 使用与 PagePainter 完全一致的 TextPainter 实测章标题高度 + 底部留白，杜绝双行标题压字
+  static double measureHeadingHeight(
+    String chapterTitle,
+    TypographyConfig config,
+  ) {
+    final text = chapterTitle.trim().isEmpty ? ' ' : chapterTitle;
+    final tp = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: chapterHeadingStyle(config, Colors.black),
+      ),
+      textDirection: TextDirection.ltr,
+      maxLines: 2,
+      ellipsis: '…',
+    )..layout(maxWidth: config.contentWidth);
+    final measured = tp.height.ceilToDouble();
+    tp.dispose();
+    return measured + 20.0;
+  }
+
   /// 将纯段落列表排成精确整页列表（底部绝无切半行、绝对保留段间距）
   List<TypedPage> paginate({
     required List<String> paragraphs,
@@ -79,7 +109,7 @@ class TypographyEngine {
       ];
     }
 
-    final headingHeight = config.fontSize * 1.45 + 24.0;
+    final headingHeight = measureHeadingHeight(chapterTitle, config);
     final pages = <TypedPage>[];
     var cursor = 0;
 

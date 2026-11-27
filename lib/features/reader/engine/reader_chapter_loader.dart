@@ -71,18 +71,32 @@ class ReaderChapterLoader {
         );
 
     if (paragraphs.isNotEmpty) {
+      final db = ref.read(appDatabaseProvider);
+      final latestBook = await db.getBookById(book.id);
+      if (latestBook == null ||
+          latestBook.sourceId != book.sourceId ||
+          latestBook.bookUrl != book.bookUrl) {
+        return const [];
+      }
       _putMemory(book.id, chapter.chapterIndex, paragraphs);
       final bytes = await fileStore.writeChapter(
         book.id,
         chapter.chapterIndex,
         pipeline.serializeParagraphs(paragraphs),
       );
-      await ref.read(appDatabaseProvider).markChapterCached(
-            bookId: book.id,
-            chapterIndex: chapter.chapterIndex,
-            isCached: true,
-            cachedBytes: bytes,
-          );
+      final afterWriteBook = await db.getBookById(book.id);
+      if (afterWriteBook == null ||
+          afterWriteBook.sourceId != book.sourceId ||
+          afterWriteBook.bookUrl != book.bookUrl) {
+        invalidateBook(book.id);
+        return const [];
+      }
+      await db.markChapterCached(
+        bookId: book.id,
+        chapterIndex: chapter.chapterIndex,
+        isCached: true,
+        cachedBytes: bytes,
+      );
     }
     return paragraphs;
   }

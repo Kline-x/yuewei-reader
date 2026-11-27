@@ -1,13 +1,10 @@
-import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
-import '../engine/curl_geometry.dart';
 import '../engine/page_models.dart';
 import '../engine/reader_page_slot.dart';
 import '../engine/reader_turn_gesture_math.dart';
-import 'curl_turn_painter.dart';
 import 'page_picture_cache.dart';
 import 'reader_continuous_scroll_view.dart';
-import 'slide_cover_painter.dart';
+import 'reader_pager_painter_factory.dart';
 
 /// QQ 阅读级统一五模式翻页视口物理控制器（仿真 / 覆盖 / 平移 / 上下 / 无，≤ 350 行）
 class ReaderPagerViews extends StatefulWidget {
@@ -16,6 +13,7 @@ class ReaderPagerViews extends StatefulWidget {
     required this.turnMode,
     required this.bookTitle,
     required this.initialCharOffset,
+    this.scrollJumpCommand = const ScrollJumpCommand(token: 0, chapterIndex: 0),
     required this.currentItem,
     required this.prevItem,
     required this.nextItem,
@@ -35,19 +33,15 @@ class ReaderPagerViews extends StatefulWidget {
   final PageTurnMode turnMode;
   final String bookTitle;
   final int initialCharOffset;
+  final ScrollJumpCommand scrollJumpCommand;
   final PageRenderItem currentItem;
-  final PageRenderItem? prevItem;
-  final PageRenderItem? nextItem;
+  final PageRenderItem? prevItem, nextItem;
   final List<ChapterBlock> scrollBlocks;
   final TypographyConfig config;
   final ReaderPaperTheme theme;
-  final bool hasPrevChapter;
-  final bool hasNextChapter;
-  final VoidCallback onCommitNext;
-  final VoidCallback onCommitPrev;
-  final VoidCallback onTapCenterMenu;
-  final VoidCallback onNeedAppendNextChapter;
-  final VoidCallback onRequestPrevChapter;
+  final bool hasPrevChapter, hasNextChapter;
+  final VoidCallback onCommitNext, onCommitPrev, onTapCenterMenu;
+  final VoidCallback onNeedAppendNextChapter, onRequestPrevChapter;
   final void Function(int chapterIndex, int charOffset) onScrollChapterProgress;
 
   @override
@@ -62,15 +56,9 @@ class ReaderPagerViewsState extends State<ReaderPagerViews>
 
   int _activeDirection = 0;
   bool _pendingCommit = false;
-  double _linearProgress = 0.0;
-  double _animFromProgress = 0.0;
-  double _animToProgress = 0.0;
-
-  Offset _dragStartPos = Offset.zero;
-  Offset _curlCorner = Offset.zero;
-  Offset _curlTouch = Offset.zero;
-  Offset _animFromTouch = Offset.zero;
-  Offset _animToTouch = Offset.zero;
+  double _linearProgress = 0.0, _animFromProgress = 0.0, _animToProgress = 0.0;
+  Offset _dragStartPos = Offset.zero, _curlCorner = Offset.zero;
+  Offset _curlTouch = Offset.zero, _animFromTouch = Offset.zero, _animToTouch = Offset.zero;
 
   @override
   void initState() {
@@ -88,9 +76,11 @@ class ReaderPagerViewsState extends State<ReaderPagerViews>
   @override
   void didUpdateWidget(covariant ReaderPagerViews oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.turnMode != widget.turnMode) _resetGestureState();
-    if (oldWidget.theme.id != widget.theme.id ||
-        oldWidget.config != widget.config) {
+    if (oldWidget.turnMode != widget.turnMode) {
+      _resetGestureState();
+      if (widget.turnMode == PageTurnMode.scroll) _picCache.clear();
+    }
+    if (oldWidget.theme.id != widget.theme.id || oldWidget.config != widget.config) {
       _picCache.clear();
     }
   }
@@ -102,19 +92,33 @@ class ReaderPagerViewsState extends State<ReaderPagerViews>
     super.dispose();
   }
 
-  void turnNextAnimated() =>
-      _triggerAnimatedTurn(true, widget.nextItem, widget.hasNextChapter);
+  void clearPictureCache() => _picCache.clear();
 
-  void turnPrevAnimated() =>
-      _triggerAnimatedTurn(false, widget.prevItem, widget.hasPrevChapter);
+  void scrollToLocation(
+    int chapterIndex,
+    int charOffset, {
+    bool landOnEnd = false,
+    bool animate = false,
+  }) =>
+      _scrollKey.currentState?.scrollToLocation(
+        chapterIndex,
+        charOffset,
+        landOnEnd: landOnEnd,
+        animate: animate,
+      );
 
-  void _triggerAnimatedTurn(
-      bool forward, PageRenderItem? target, bool hasMoreChapter) {
+  void turnNextAnimated() => _triggerAnimatedTurn(true);
+  void turnPrevAnimated() => _triggerAnimatedTurn(false);
+
+  void _triggerAnimatedTurn(bool forward) {
     if (widget.turnMode == PageTurnMode.scroll) {
       _scrollKey.currentState?.scrollByStep(forward);
       return;
     }
-    _flushActiveAnimation();
+    // 先冲刷进行中动画再读取最新槽位，避免快速连点捕获过期槽位多提交
+    if (_flushActiveAnimation()) return;
+    final target = forward ? widget.nextItem : widget.prevItem;
+    final hasMoreChapter = forward ? widget.hasNextChapter : widget.hasPrevChapter;
     final commit = forward ? widget.onCommitNext : widget.onCommitPrev;
     if (target == null) {
       if (hasMoreChapter) commit();
@@ -129,11 +133,8 @@ class ReaderPagerViewsState extends State<ReaderPagerViews>
       direction: forward ? 1 : -1,
       durationMs: forward ? 270 : 250,
       corner: forward ? Offset(size.width, size.height) : Offset.zero,
-      fromTouch: forward
-          ? ReaderTurnGestureMath.clickCurlStart(size)
-          : Offset.zero,
-      toTouch:
-          forward ? ReaderTurnGestureMath.clickCurlEnd(size) : Offset.zero,
+      fromTouch: forward ? ReaderTurnGestureMath.clickCurlStart(size) : Offset.zero,
+      toTouch: forward ? ReaderTurnGestureMath.clickCurlEnd(size) : Offset.zero,
     );
   }
 
@@ -159,8 +160,6 @@ class ReaderPagerViewsState extends State<ReaderPagerViews>
     _animCtrl.forward(from: 0.0);
   }
 
-  void scrollResetTop() => _scrollKey.currentState?.jumpToTop();
-
   void _onAnimTick() {
     final t = Curves.easeOutCubic.transform(_animCtrl.value);
     setState(() {
@@ -172,22 +171,24 @@ class ReaderPagerViewsState extends State<ReaderPagerViews>
     });
   }
 
-  void _flushActiveAnimation() {
+  bool _flushActiveAnimation() {
     if (_animCtrl.isAnimating) {
       _animCtrl.stop();
-      _finalizeCompletedTurn();
-    } else if (_activeDirection != 0) {
-      _resetGestureState();
+      return _finalizeCompletedTurn();
     }
+    if (_activeDirection != 0) _resetGestureState();
+    return false;
   }
 
-  void _finalizeCompletedTurn() {
+  bool _finalizeCompletedTurn() {
     final dir = _activeDirection;
     final commit = _pendingCommit;
     _resetGestureState();
     if (commit && dir != 0) {
       dir > 0 ? widget.onCommitNext() : widget.onCommitPrev();
+      return true;
     }
+    return false;
   }
 
   void _resetGestureState() {
@@ -224,28 +225,30 @@ class ReaderPagerViewsState extends State<ReaderPagerViews>
   void _onPanUpdate(DragUpdateDetails details) {
     final size = Size(widget.config.viewportWidth, widget.config.viewportHeight);
     if (size.width <= 0 || size.height <= 0) return;
-
     final dx = details.localPosition.dx - _dragStartPos.dx;
     var dir = _activeDirection;
     if (dir == 0) {
-      if (dx < -4.0 && widget.nextItem != null) {
+      if (dx < -4.0 && (widget.nextItem != null || widget.hasNextChapter)) {
         dir = 1;
-      } else if (dx > 4.0 && widget.prevItem != null) {
+      } else if (dx > 4.0 && (widget.prevItem != null || widget.hasPrevChapter)) {
         dir = -1;
       }
       if (dir == 0) return;
     }
-
+    final directed = dir > 0 ? -dx : dx;
+    final progress = (directed / size.width).clamp(0.0, 1.0);
     setState(() {
       _activeDirection = dir;
-      _linearProgress = (dx.abs() / size.width).clamp(0.0, 1.0);
-      if (widget.turnMode == PageTurnMode.curl && dir == 1) {
-        _curlTouch = ReaderTurnGestureMath.resolveDragTouch(
-          size: size,
-          startPos: _dragStartPos,
-          currentPos: details.localPosition,
-          corner: _curlCorner,
-        );
+      _linearProgress = progress;
+      if (widget.turnMode == PageTurnMode.curl && dir == 1 && widget.nextItem != null) {
+        _curlTouch = directed <= 0.0
+            ? _curlCorner
+            : ReaderTurnGestureMath.resolveDragTouch(
+                size: size,
+                startPos: _dragStartPos,
+                currentPos: details.localPosition,
+                corner: _curlCorner,
+              );
       }
     });
   }
@@ -254,18 +257,17 @@ class ReaderPagerViewsState extends State<ReaderPagerViews>
     if (_activeDirection == 0) return;
     final size = Size(widget.config.viewportWidth, widget.config.viewportHeight);
     final dir = _activeDirection;
+    final targetSlot = dir > 0 ? widget.nextItem : widget.prevItem;
     final commit = ReaderTurnGestureMath.shouldCommitDrag(
       direction: dir,
       progress: _linearProgress,
       velocityX: details.velocity.pixelsPerSecond.dx,
     );
-
-    if (widget.turnMode == PageTurnMode.none) {
+    if (widget.turnMode == PageTurnMode.none || targetSlot == null) {
       _resetGestureState();
       if (commit) dir > 0 ? widget.onCommitNext() : widget.onCommitPrev();
       return;
     }
-
     final ms = ReaderTurnGestureMath.computeSettleDurationMs(
       progress: _linearProgress,
       commit: commit,
@@ -289,6 +291,7 @@ class ReaderPagerViewsState extends State<ReaderPagerViews>
         blocks: widget.scrollBlocks,
         bookTitle: widget.bookTitle,
         initialCharOffset: widget.initialCharOffset,
+        scrollJumpCommand: widget.scrollJumpCommand,
         config: widget.config,
         theme: widget.theme,
         hasPrevChapter: widget.hasPrevChapter,
@@ -308,41 +311,24 @@ class ReaderPagerViewsState extends State<ReaderPagerViews>
       onPanEnd: _onPanEnd,
       onPanCancel: () => _onPanEnd(DragEndDetails()),
       child: RepaintBoundary(
-        child: CustomPaint(size: size, painter: _buildTurnPainter(size)),
+        child: CustomPaint(
+          size: size,
+          painter: ReaderPagerPainterFactory.build(
+            turnMode: widget.turnMode,
+            picCache: _picCache,
+            currentItem: widget.currentItem,
+            prevItem: widget.prevItem,
+            nextItem: widget.nextItem,
+            config: widget.config,
+            theme: widget.theme,
+            size: size,
+            activeDirection: _activeDirection,
+            linearProgress: _linearProgress,
+            curlTouch: _curlTouch,
+            curlCorner: _curlCorner,
+          ),
+        ),
       ),
-    );
-  }
-
-  CustomPainter _buildTurnPainter(Size size) {
-    final curPic =
-        _picCache.obtain(widget.currentItem, widget.config, widget.theme, size);
-    final targetSlot = _activeDirection > 0
-        ? widget.nextItem
-        : (_activeDirection < 0 ? widget.prevItem : null);
-    final ui.Picture? targetPic = targetSlot == null
-        ? null
-        : _picCache.obtain(targetSlot, widget.config, widget.theme, size);
-    if (widget.turnMode == PageTurnMode.curl) {
-      final curlGeom = (_activeDirection > 0 && targetPic != null)
-          ? CurlGeometry.compute(
-              size: size, touch: _curlTouch, corner: _curlCorner)
-          : null;
-      return CurlTurnPainter(
-        currentPicture: curPic,
-        targetPicture: targetPic,
-        geometry: curlGeom,
-        theme: widget.theme,
-        isTurningPrev: _activeDirection < 0,
-        progress: _linearProgress,
-      );
-    }
-    return SlideCoverPainter(
-      turnMode: widget.turnMode,
-      currentPicture: curPic,
-      targetPicture: targetPic,
-      direction: _activeDirection,
-      progress: _linearProgress,
-      theme: widget.theme,
     );
   }
 }

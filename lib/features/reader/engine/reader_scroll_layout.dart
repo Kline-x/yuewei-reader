@@ -145,4 +145,80 @@ class ReaderScrollLayout {
         .clamp(120.0, config.viewportHeight);
     return ((localY + readableH * 0.85) / layout.totalHeight).clamp(0.0, 1.0);
   }
+
+  /// 计算「加载上一章并落至章末」的精准章内局部纵坐标（始终位于本章末尾且不越界到下一章）
+  static double computeLandOnEndLocalY(
+    ScrollChapterLayout layout,
+    TypographyConfig config,
+  ) {
+    if (layout.totalHeight <= 0.0) return 0.0;
+    final readableH = (config.viewportHeight -
+            config.topPadding -
+            config.bottomPadding)
+        .clamp(120.0, config.viewportHeight);
+    final maxLocal = (layout.totalHeight - 1.0).clamp(0.0, layout.totalHeight);
+    return (layout.totalHeight - readableH * 0.85).clamp(0.0, maxLocal);
+  }
+
+  /// 根据当前全局 scrollY 反查活跃章块索引、章内局部纵坐标与字符锚点
+  static ({int blockPos, int chapterIndex, double localY, int charOffset})?
+      resolveAnchorAtScrollY({
+    required double scrollY,
+    required List<ChapterBlock> blocks,
+    required List<double> blockStartY,
+    required Map<int, ScrollChapterLayout> layouts,
+  }) {
+    if (blocks.isEmpty || blockStartY.isEmpty) return null;
+    final limit =
+        blocks.length < blockStartY.length ? blocks.length : blockStartY.length;
+    var activePos = 0;
+    for (var i = 1; i < limit; i++) {
+      if (scrollY >= blockStartY[i]) {
+        activePos = i;
+      } else {
+        break;
+      }
+    }
+    final block = blocks[activePos];
+    final layout = layouts[block.chapterIndex];
+    if (layout == null) return null;
+    final localY =
+        (scrollY - blockStartY[activePos]).clamp(0.0, layout.totalHeight);
+    final charOffset = charOffsetAtLocalY(layout, block.paragraphs, localY);
+    return (
+      blockPos: activePos,
+      chapterIndex: block.chapterIndex,
+      localY: localY,
+      charOffset: charOffset,
+    );
+  }
+
+  /// 计算目标章节与字符偏移（或章末）在当前连续滚动列表中的原始像素纵坐标
+  static double? computeTargetYForLocation({
+    required List<ChapterBlock> blocks,
+    required List<double> blockStartY,
+    required Map<int, ScrollChapterLayout> layouts,
+    required TypographyConfig config,
+    required int chapterIndex,
+    required int charOffset,
+    bool landOnEnd = false,
+  }) {
+    final limit =
+        blocks.length < blockStartY.length ? blocks.length : blockStartY.length;
+    var targetPos = -1;
+    for (var i = 0; i < limit; i++) {
+      if (blocks[i].chapterIndex == chapterIndex) {
+        targetPos = i;
+        break;
+      }
+    }
+    if (targetPos < 0) return null;
+    final block = blocks[targetPos];
+    final layout = layouts[block.chapterIndex];
+    if (layout == null) return null;
+    final localY = landOnEnd
+        ? computeLandOnEndLocalY(layout, config)
+        : offsetForChar(layout, block.paragraphs, charOffset);
+    return blockStartY[targetPos] + localY;
+  }
 }

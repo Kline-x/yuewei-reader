@@ -23,9 +23,15 @@ class ReaderBookmarkHelper {
     if (!isScrollMode && currentItem != null) {
       final start = currentItem.page.charStart;
       final end = currentItem.page.charEnd;
+      // 若页尾恰好是段落末行，charEnd 处是 1 字符段落换行符缝隙，纳入本页区间以准确点亮书签
+      final endsWithParaBreak = currentItem.page.lines.isNotEmpty &&
+          currentItem.page.lines.last.isLastLineOfPara;
       for (final b in bookmarks) {
         if (b.chapterIndex != chapterIndex) continue;
-        final hit = end > start ? (b.charOffset >= start && b.charOffset < end) : b.charOffset == start;
+        final hit = end > start
+            ? (b.charOffset >= start &&
+                (endsWithParaBreak ? b.charOffset <= end : b.charOffset < end))
+            : b.charOffset == start;
         if (hit) return b;
       }
       return null;

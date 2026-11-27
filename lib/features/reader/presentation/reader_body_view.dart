@@ -16,6 +16,7 @@ class ReaderBodyView extends StatelessWidget {
     required this.menuVisible,
     required this.turnMode,
     required this.initialCharOffset,
+    this.scrollJumpCommand = const ScrollJumpCommand(token: 0, chapterIndex: 0),
     required this.paper,
     required this.config,
     required this.topSafe,
@@ -63,6 +64,7 @@ class ReaderBodyView extends StatelessWidget {
   final bool menuVisible;
   final PageTurnMode turnMode;
   final int initialCharOffset;
+  final ScrollJumpCommand scrollJumpCommand;
   final ReaderPaperTheme paper;
   final TypographyConfig config;
   final double topSafe;
@@ -128,6 +130,7 @@ class ReaderBodyView extends StatelessWidget {
             turnMode: turnMode,
             bookTitle: bookTitle,
             initialCharOffset: initialCharOffset,
+            scrollJumpCommand: scrollJumpCommand,
             currentItem: currentItem!,
             prevItem: prevItem,
             nextItem: nextItem,
@@ -158,6 +161,12 @@ class ReaderBodyView extends StatelessWidget {
             onTogglePlayPause: onToggleTtsPlayPause ?? () {},
           ),
         if (menuVisible) ...[
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: onToggleMenu,
+            ),
+          ),
           ReaderTopBar(
             paper: paper,
             topSafe: topSafe,

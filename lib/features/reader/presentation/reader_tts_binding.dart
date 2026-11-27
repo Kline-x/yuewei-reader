@@ -13,10 +13,13 @@ class ReaderTtsBinding {
     required Object owner,
     required TtsController tts,
     required ReaderSessionController session,
+    TtsLocateCallback? onLocate,
   }) {
     tts.bindReader(
       owner: owner,
-      onLocate: (chIdx, offset) => session.jumpToLocation(chIdx, offset),
+      onLocate: onLocate ??
+          (chIdx, offset) =>
+              session.jumpToLocation(chIdx, offset, animateScroll: true),
       onRequestChapter: (targetIdx) async {
         if (targetIdx < 0 || targetIdx >= session.chapters.length) return null;
         await session.loadChapter(targetIdx);
