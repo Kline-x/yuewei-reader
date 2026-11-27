@@ -304,6 +304,24 @@ void main() {
       expect(BookMetadataSanitizer.sanitizeUpdateTime('更新时间：2026-01-22 22:43'), '2026-01-22 22:43');
       expect(BookMetadataSanitizer.sanitizeUpdateTime('未知时间'), isEmpty);
       expect(SourceCrawlerService.cleanSeoIntro('window.__CF=1; function(){}'), isEmpty);
+      expect(
+        BookMetadataSanitizer.cleanSeoIntro(
+          '斗破苍穹已更新，本站除提供免费在线阅读外（无广告哦），还提供txt电子书下载，《斗破苍穹》在手机也可以完美阅读和下载！',
+        ),
+        isEmpty,
+      );
+      expect(
+        BookMetadataSanitizer.cleanSeoIntro(
+          '这里是属于斗气的世界，没有花俏艳丽的魔法！ 斗破苍穹已更新，本站除提供免费在线阅读外（无广告哦），还提供TXT电子书下载，《斗破苍穹》在手机上也可以完美阅读和下载！',
+        ),
+        '这里是属于斗气的世界，没有花俏艳丽的魔法！',
+      );
+      expect(
+        BookMetadataSanitizer.cleanSeoIntro(
+          '少年在旧手机上读完父亲留下的日记，决意踏上寻找失踪船队的远航。',
+        ),
+        '少年在旧手机上读完父亲留下的日记，决意踏上寻找失踪船队的远航。',
+      );
 
       final kk = BuiltinSources.all.firstWhere((s) => s.id == 'builtin_kk169');
       final kkNode = EvaluatedNode.html(html_parser.parse('<div id="acontent"><h1>第一章</h1><script>read2();</script>(穿越小说 www.kk169.la)月如银盘。</div>').documentElement!);

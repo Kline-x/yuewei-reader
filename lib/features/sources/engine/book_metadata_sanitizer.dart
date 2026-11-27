@@ -59,12 +59,30 @@ class BookMetadataSanitizer {
     }
     s = s.replaceFirst(RegExp(r'^\d+\s+'), '').trim();
 
-    // 剥离站点常见文末推广后缀（例如《xx》是作家「yy」倾力打造... / 本书由xx为您呈现... / 作者：xx所写的... / 无弹窗推荐地址）
+    // 剥离站点常见文末推广后缀（含求书网新版站方推广套话）
     s = s
         .replaceAll(RegExp(r'《[^》]+》是作家「[^」]+」倾力打造.*$'), '')
         .replaceAll(RegExp(r'本书由[^。]*为您呈现.*$'), '')
         .replaceAll(RegExp(r'作者[：:][^\n]*所写的《[^》]+》.*$'), '')
         .replaceAll(RegExp(r'无弹窗推荐地址[：:].*$'), '')
+        .replaceAll(
+          RegExp(
+            r'(?:《[^》]+》|\S+)?已更新[，,]\s*本站除提供.*?(?:在线阅读|免费阅读).*$',
+            caseSensitive: false,
+          ),
+          '',
+        )
+        .replaceAll(
+          RegExp(r'还提供\s*txt\s*电子书下载.*$', caseSensitive: false),
+          '',
+        )
+        .replaceAll(
+          RegExp(
+            r'(?:《[^》]+》)?在手机(?:上)?也可以完美阅读(?:和下载)?[！!。]?\s*$',
+            caseSensitive: false,
+          ),
+          '',
+        )
         .trim();
 
     if (s.isEmpty) return '';
@@ -72,7 +90,11 @@ class BookMetadataSanitizer {
         RegExp(r'提供《.*》的最新章节和全文阅读').hasMatch(s) ||
         RegExp(r'欢迎光临本站阅读').hasMatch(s) ||
         RegExp(r'本站提供.*无错字').hasMatch(s) ||
-        RegExp(r'各位书友要是觉得《.*》还不错').hasMatch(s)) {
+        RegExp(r'各位书友要是觉得《.*》还不错').hasMatch(s) ||
+        RegExp(
+          r'已更新[，,]\s*本站除提供.*在线阅读|还提供\s*txt\s*电子书下载|在手机(?:上)?也可以完美阅读(?:和下载)?',
+          caseSensitive: false,
+        ).hasMatch(s)) {
       return '';
     }
     final chars = s.characters;
