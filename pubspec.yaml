@@ -1,7 +1,7 @@
 name: yuewei_reader
 description: "阅微 — 现代静谧纸感追更阅读器（Modern Soft UI v4 · Flutter + Drift）"
 publish_to: 'none'
-version: 1.0.1+2
+version: 1.1.0+3
 
 environment:
   sdk: ^3.13.3

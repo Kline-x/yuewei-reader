@@ -13,6 +13,7 @@
 | **M3** | `f1e753e` | 已完成 | 双端 TTS 听书、WebDAV 云同步、12 组书源扩充 | `64/64` 测试 · `0` analyze issues · 最大 `348` 行 · K60 三轮零缺陷 |
 | **M4** | `6f8c79e` | 已完成 | 仓库门面、治理文档体系、GitHub Actions CI/CD 与 iOS 对等核验 | CI Run `#45515717930` 全绿（门禁单测 + Android APK + `macos-latest` iOS 无签名构建）· `v1.0.0` 发版就绪 |
 | **M5** | `v1.0.1` | 已完成 | 24 项全量加固、v4 索引升级与 GitHub Release 应用内在线更新 | `78/78` 测试 · `0` analyze issues · `131` 文件最大 `348` 行 · K60 两轮零缺陷 |
+| **M6** | `v1.1.0` | 已完成 | 全局后台听书胶囊、双端系统媒控、轻量自定义字体与自适应双页排版 | `101/101` 测试 · `0` analyze issues · `145` 文件最大 `349` 行 · K60 两轮零缺陷 |
 
 ---
 
@@ -75,3 +76,22 @@
   - 单元测试：`flutter test` **78/78**（14 个测试文件）全绿通过。
   - Android Release 产物：云端 CI Run [`#45958131223`](https://github.com/Kline-x/yuewei-reader/actions/runs/45958131223) 已启用正式签名 Secrets 构建并发布 `v1.0.1` GitHub Release，`app-release.apk`（`arm64-v8a`，`1.0.1+2`）体积 **29,269,975 字节**，SHA-256：`891c7357302dd3372f5d58ed716ea97f98c3479bc6f060996d377e7caafe0171`，APK 签名证书 SHA-256 指纹：`4d5632e3d50e16383185ff0555723321fa643aa25e6d5da60c44e68b98c92eea`。
   - 真机 E2E 回归（Redmi K60 `22ecd9e7`）：两轮真机扩大范围回归闭环，强杀冷启耗时 **894ms**（预热 **380ms**，二轮 `v1.0.1` **664ms**），求书网刷新净洗简介并保留 `7 / 1654 章 (64.7 KB)` 缓存、设置页展示 `v1.0.1 (2)` 并实网校验最新、Wi-Fi 传书 401 鉴权与退页自动停服、双行标题与五模式/连续滚动重锚定、TTS 音量键释放全链路实测通过，`logcat` 全程零应用级崩溃与异常。
+
+### M6 — 全局后台听书、双端系统媒控、自定义字体与双页排版 (`1.1.0+3` / `v1.1.0`)
+- **核心交付**：
+  - **全局悬浮听书胶囊、后台自主跨章与双端系统媒控**：
+    - `TtsController` 新增 `detachReader` 实现退出阅读器不断播，新增 `TtsBackgroundChapterLoader` 在脱离阅读器态下优先从磁盘缓存/在线抓包自动跨章加载正文并原子写回 `AppDatabase` 阅读进度；新增 `GlobalTtsMiniCapsule` 悬浮于 `RootShell` 底栏正上方（支持微缩封面/回落耳机图标、呼吸状态点、播停/关闭与回跳自动重连定位，软键盘弹出时纯滑落同步隐藏）。
+    - 双端 `HostBridge` 对等新增 `updateMediaSession`、`clearMediaSession` 与 `onMediaCommand`（扩展至 14 项调用方法 + 5 项回调事件）；Android 端新增纯原生 `TtsForegroundService.kt`（`MediaSession` + `Notification.MediaStyle` + `mediaPlayback` 前台服务）并支持 Android 13+ `POST_NOTIFICATIONS` 温和申请；iOS 端接入 `MediaPlayer`（`MPNowPlayingInfoCenter` 与 `MPRemoteCommandCenter`）。
+  - **轻量自定义字体与精细排版调控**：
+    - 新增 `lib/features/reader/fonts/`（`CustomFontCodec` / `CustomFontManager`）校验 SFNT/OTTO 魔数头与 30MB 上限，基于 Flutter 原生 `FontLoader` 启动预加载并支持 `.ttf`/`.otf` 本机选择（双端 `pickFontFile`）与局域网 Wi-Fi 传字体（`WifiTransferServer` 沿用 4 位配对码鉴权）。
+    - `ReaderTypographySheet` 拆分出 `ReaderTypographySliders` 与 `ReaderFontSheet`，支持段距（`8~28px`）、页边距（`12~40px`）、字距（`0~2px`）、首行 2 字缩进开关、版式选择（自动/单页/双页）与「重置默认排版」。
+  - **平板/折叠屏自适应双页书本排版**：
+    - 新增 `DualPageComposer` 与 `DualPagePainter`（含折叠屏竖向铰链避让 `spineWidth` 计算、步进 2 对开配对与中缝书脊内凹渐变阴影、`PageTurnMode.curl` 平滑降级 `cover` 翻页及按字符偏移重锚定）。
+  - **P1/P2 收尾加固**：
+    - `SoftSpacing.bottomClearance(hasTtsCapsule:)` 为「设置」「书架」「探索」与撤销条动态追加 `80dp` 净空消除胶囊遮挡；消除 `RootShell` 与 `GlobalTtsMiniCapsule` 包裹 `BackdropFilter` 的透明度节点，彻底清零 Flutter 3.47 Impeller `SetInheritedOpacity` 验证日志。
+- **实测门禁与构建指标**：
+  - 代码体积门禁：`lib/` 与 `test/` 共 **145 个**非生成 `.dart` 文件，**100% 严格 `<= 350` 行**（单文件最大 **349 行**，累计 **32,739 行**）。
+  - 静态分析：`flutter analyze` **0 issues**；`swiftc -parse ios/Runner/AppDelegate.swift` 与 `plutil -lint ios/Runner/Info.plist` 通过。
+  - 单元测试：`flutter test` **101/101**（19 个测试文件）全绿通过。
+  - 正式签名 Android 产物：`app-release.apk`（`arm64-v8a`，`1.1.0+3`）体积 **29,352,387 字节**，SHA-256：`5dcd57b7d2171b791076f7c5660ecf4571ed1a8a06182645d364dbdb3076defa`，`apksigner` 证书指纹：`4d5632e3d50e16383185ff0555723321fa643aa25e6d5da60c44e68b98c92eea`。
+  - 真机 E2E 回归（Redmi K60 `22ecd9e7`）：两轮真机扩大范围回归零缺陷闭环，正式签名自覆盖升级成功、强杀冷启 **1000ms**；实测局域网 4 位配对码传字体/小说与 401/400 拦截及退页停服、精细滑杆与字体实时切换/删除回落、横屏双页对开步进 2 与奇数末页跨章对齐、全局悬浮胶囊后台自动跨章（本地 3 章/6 章）与通知栏媒控卡片联动、`v1.1.0 (3)` 净空抬升后设置「检查应用更新」完整露出实网校验最新与书架撤销条抬升零遮挡、`POST_NOTIFICATIONS` 温和申请及 `logcat` 彻底清零 `SetInheritedOpacity` 与零异常崩溃。

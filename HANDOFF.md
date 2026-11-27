@@ -14,7 +14,7 @@
 | **历史隔离说明** | `/Users/yang/Documents/code/vibCoding/novel_reader_flutter` 为历史独立仓库，**严禁在本项目任务中修改或写入** |
 | **Flutter 版本** | `3.47.4` (`stable` channel) |
 | **Dart SDK 约束** | `^3.13.3` |
-| **应用版本** | `1.0.1+2` (`pubspec.yaml`) |
+| **应用版本** | `1.1.0+3` (`pubspec.yaml`) |
 | **Android 标识** | `applicationId = "com.kline.yuewei"`、`namespace = "com.kline.yuewei_reader"`、`JavaVersion.VERSION_17` |
 | **iOS 标识** | `CFBundleDisplayName = "阅微"`、`IPHONEOS_DEPLOYMENT_TARGET = 15.0` |
 
@@ -41,48 +41,52 @@ lib/
 │   │   ├── app_database.g.dart                # 唯一允许豁免 350 行红线的 Drift 生成文件
 │   │   └── bookmark_dao.dart                  # 书签查询与写入 DAO
 │   ├── network/                               # Dio 封装与 GBK/UTF-8 自适应解码
-│   ├── platform/host_bridge.dart              # com.kline.yuewei/host_bridge 双端宿主通道封装
+│   ├── platform/
+│   │   ├── host_bridge.dart                 # com.kline.yuewei/host_bridge 双端宿主通道封装（14 调用 + 5 回调）
+│   │   └── host_bridge_models.dart          # HostCapabilities / VolumeKeyEvent / MediaCommandAction / PickedBookFile
 │   └── storage/                               # ChapterFileStore 磁盘正文缓存
 ├── design_system/
-│   ├── tokens/                                # SoftTokens / SoftPalette（4 大意境×昼夜 8 套主题）
+│   ├── tokens/                                # SoftTokens / SoftPalette（4 大意境×昼夜 8 套主题与动态净空指标）
 │   ├── components/                            # AmbientBackground, SublimeFloatingDock, SoftCard, SoftBottomSheet
-│   └── feedback/                              # AppFeedback Toast/提示封装
+│   └── feedback/                              # AppFeedback Toast/撤销提示封装
 └── features/
     ├── shelf/                                 # 书架数据仓库与网格/列表 UI
     ├── discover/                              # 搜索历史、流式并发搜书与聚合结果展示
     ├── book_detail/                           # 详情自愈 (BookDetailLoader)、目录导航与加入书架
     ├── reader/
-    │   ├── engine/                            # 分页排版、5 模式翻页枚举 (PageTurnMode) 与 5 款阅读纸感色板
-    │   └── presentation/                      # ReaderPage、翻页视图、连续滚动视图、换源/书签/搜书抽屉
+    │   ├── engine/                            # 分页排版、DualPageComposer 双页几何、PageTurnMode 与纸感色板
+    │   ├── fonts/                             # CustomFontCodec / CustomFontManager 轻量自定义字体管理（TTF/OTF）
+    │   └── presentation/                      # ReaderPage、DualPagePainter、Sliders/FontSheet 与换源/书签/搜书抽屉
     ├── sources/
-    │   ├── domain/                            # BookSourceRule 与 AggregatedBookMatch 模型
-    │   ├── engine/                            # RuleEvaluator, LegadoRuleAdapter, SourceCrawlerService
-    │   ├── data/                              # builtin_sources*.dart (12 组内置源) 与 SourceRepository
-    │   └── presentation/                      # 书源分组管理、并发测速与三合一导入导出
+│   │   ├── domain/                            # BookSourceRule 与 AggregatedBookMatch 模型
+│   │   ├── engine/                            # RuleEvaluator, LegadoRuleAdapter, SourceCrawlerService
+│   │   ├── data/                              # builtin_sources*.dart (12 组内置源) 与 SourceRepository
+│   │   └── presentation/                      # 书源分组管理、并发测速与三合一导入导出
     ├── local_import/
     │   ├── data/                              # LocalImportService (TXT/EPUB 导入持久化)
     │   ├── engine/                            # 编码探测与 TXT/EPUB 章节切分
-    │   ├── wifi/                              # WifiTransferServer (默认 18680 端口) 与网页端上传 HTML
+    │   ├── wifi/                              # WifiTransferServer (18680 端口) 支持电子书/书源/字体传输
     │   └── presentation/                      # 本地导入与 Wi-Fi 传书界面
     ├── download/                              # 离线章节批量缓存管理器
-    ├── tts/                                   # TtsController 状态机与 TtsControlSheet 播控面板
+    ├── tts/                                   # TtsController、后台跨章加载器、GlobalTtsMiniCapsule 与播控面板
     ├── sync/                                  # BackupSnapshotCodec (LWW 合并)、WebdavSyncClient、协调器与同步页
     ├── update/                                # GitHub Releases 在线更新检测、下载校验与弹窗
     └── settings/                              # 外观主题、阅读器设置、检查更新与关于信息
 
 android/app/src/main/
-├── AndroidManifest.xml                        # 应用名 "阅微"、INTERNET/REQUEST_INSTALL_PACKAGES 与 FileProvider 声明
+├── AndroidManifest.xml                        # 应用名 "阅微"、前台媒体服务/通知/安装权限与 FileProvider 声明
 ├── res/xml/
 │   ├── network_security_config.xml            # 明文 HTTP 书源与局域网传书网络策略
 │   └── file_paths.xml                         # FileProvider cache/yuewei_updates/ 更新包安全路径声明
 └── kotlin/com/kline/yuewei_reader/
-    ├── MainActivity.kt                        # FlutterActivity 宿主通道、文件选择器与物理音量键拦截
+    ├── MainActivity.kt                        # FlutterActivity 宿主通道、文件/字体选择器、媒体回调与音量键拦截
     ├── NativeTtsAndBackupHelper.kt            # Android TextToSpeech（音频焦点监听）与 SAF JSON 文件导入导出
-    └── NativeAppUpdateHelper.kt               # APK SHA-256 校验、未知来源权限引导与系统安装器/外链调起
+    ├── NativeAppUpdateHelper.kt               # APK SHA-256 校验、未知来源权限引导与系统安装器/外链调起
+    └── TtsForegroundService.kt                # 纯原生 MediaSession + Notification.MediaStyle 前台保活服务
 
 ios/Runner/
 ├── Info.plist                                 # 品牌名 "阅微"、ATS、本地网络说明与 UIBackgroundModes (audio)
-├── AppDelegate.swift                          # FlutterMethodChannel、UIDocumentPicker、AVSpeechSynthesizer 封装
+├── AppDelegate.swift                          # HostBridge、UIDocumentPicker（含字体）、MediaPlayer 媒控与 AVSpeechSynthesizer
 └── Runner.xcodeproj/project.pbxproj           # IPHONEOS_DEPLOYMENT_TARGET = 15.0
 ```
 
@@ -93,7 +97,7 @@ ios/Runner/
 ### 启动时序 (`lib/main.dart`)
 1. 调用 `WidgetsFlutterBinding.ensureInitialized()` 与 `SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge)`。
 2. 并行完成 `SharedPreferences.getInstance()` 与 `HostBridge.instance.initialize()`（向原生端拉取平台信息、版本号及音量键翻页支持能力）。
-3. 注入 `ProviderScope` 并挂载 `YueweiApp`；首帧 `initState` 中异步调用 `sourceRepositoryProvider.ensureBuiltinSourcesSeeded()` 将 12 组内置书源幂等写入数据库。
+3. 注入 `ProviderScope` 并挂载 `YueweiApp`；首帧回调中异步调用 `sourceRepositoryProvider.ensureBuiltinSourcesSeeded()` 幂等写入 12 组内置书源，并同步预加载 `customFontManagerProvider.notifier.loadAllRegisteredFonts()` 恢复已导入字体与启动后可取消的自动检查更新定时器。
 
 ### 路由表 (`lib/app/router.dart`)
 - `/shelf` — 书架主页（`RootShell` Branch 0）
@@ -106,8 +110,8 @@ ios/Runner/
 - `/reader/:bookId?chapter=<index>` — 沉浸阅读器页
 
 ### 双端原生方法通道 (`com.kline.yuewei/host_bridge`)
-- **Dart -> 原生 (`invokeMethod`，11 项)**：`getHostCapabilities`、`setVolumeKeyIntercept`、`keepScreenOn`、`pickLocalBookFile`、`ttsSpeak`、`ttsStop`、`ttsIsAvailable`、`exportTextFile`、`pickAndReadTextFile`、`installApk`、`openExternalUrl`
-- **原生 -> Dart (`_handleNativeCall`)**：`onVolumeDown`、`onVolumeUp`、`onTtsDone`、`onTtsError`
+- **Dart -> 原生 (`invokeMethod`，14 项)**：`getHostCapabilities`、`setVolumeKeyIntercept`、`keepScreenOn`、`pickLocalBookFile`、`pickFontFile`、`ttsSpeak`、`ttsStop`、`ttsIsAvailable`、`updateMediaSession`、`clearMediaSession`、`exportTextFile`、`pickAndReadTextFile`、`installApk`、`openExternalUrl`
+- **原生 -> Dart (`_handleNativeCall`，5 项)**：`onVolumeDown`、`onVolumeUp`、`onMediaCommand`、`onTtsDone`、`onTtsError`
 
 ---
 
@@ -117,15 +121,17 @@ ios/Runner/
 # 全量静态分析
 flutter analyze
 
-# 全量单元测试（14 个测试文件）
+# 全量单元测试（19 个测试文件）
 flutter test
 
 # 单独运行关键门禁测试
 flutter test test/host_bridge_parity_test.dart
 flutter test test/app_update_test.dart
-flutter test test/source_engine_test.dart
-flutter test test/tts_engine_test.dart
-flutter test test/sync_and_source_m3_test.dart
+flutter test test/custom_font_manager_test.dart
+flutter test test/custom_font_and_typo_ui_test.dart
+flutter test test/dual_page_engine_test.dart
+flutter test test/tts_background_and_media_test.dart
+flutter test test/m6_polish_regression_test.dart
 
 # 非生成文件 <= 350 行红线核验
 find lib test -name '*.dart' ! -name '*.g.dart' -print0 | xargs -0 wc -l | sort -n | tail -n 15
