@@ -168,7 +168,7 @@ class WifiTransferCard extends StatelessWidget {
           ]),
           const SizedBox(height: 8.0),
           Text(
-            '支持同一局域网下的电脑或平板浏览器拖入上传 .txt / .epub 电子书与 .json 书源。离开本页将自动停止服务以保障局域网安全。',
+            '支持同一局域网下的电脑或平板浏览器拖入上传 .txt / .epub 电子书、.json 书源与 .ttf / .otf 字体。离开本页将自动停止服务以保障局域网安全。',
             style: SoftTypography.body.copyWith(color: tokens.textSecondary),
           ),
           if (isRunning && displayUrl != null) ...[
@@ -251,28 +251,63 @@ class WifiTransferCard extends StatelessWidget {
   }
 
   Widget _buildReceivedTile(SoftTokens tokens, WifiReceivedEntry rec) {
-    final isBook = rec.item.kind == 'book';
+    final kind = rec.item.kind;
+    final isBook = kind == 'book';
+    final isFont = kind == 'font';
     final h = rec.item.receivedAt.hour.toString().padLeft(2, '0');
     final m = rec.item.receivedAt.minute.toString().padLeft(2, '0');
+    final IconData leadingIcon;
+    final String badgeLabel;
+    final String subtitleText;
+    if (isBook) {
+      leadingIcon = Icons.menu_book_rounded;
+      badgeLabel = '书籍';
+      subtitleText = '本地藏书 · ${rec.item.itemCount} 章 · $h:$m';
+    } else if (isFont) {
+      leadingIcon = Icons.font_download_rounded;
+      badgeLabel = '字体';
+      subtitleText = '自定义字体 · 点击查看选用说明 · $h:$m';
+    } else {
+      leadingIcon = Icons.dns_outlined;
+      badgeLabel = '书源';
+      subtitleText = '书源规则 · ${rec.item.itemCount} 条 · $h:$m';
+    }
     return Padding(
       padding: const EdgeInsets.only(bottom: 8.0),
-      child: ListTile(
-        dense: true,
-        tileColor: tokens.surface,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(SoftRadius.control)),
-        leading: Icon(isBook ? Icons.menu_book_rounded : Icons.dns_outlined, size: 18.0, color: tokens.accent),
-        title: Text(
-          rec.item.displayTitle,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: SoftTypography.body.copyWith(color: tokens.textPrimary, fontWeight: FontWeight.w600),
+      child: Material(
+        color: tokens.surface,
+        borderRadius: BorderRadius.circular(SoftRadius.control),
+        clipBehavior: Clip.antiAlias,
+        child: ListTile(
+          dense: true,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(SoftRadius.control)),
+          leading: Icon(leadingIcon, size: 18.0, color: tokens.accent),
+          title: Row(children: [
+            Expanded(
+              child: Text(
+                rec.item.displayTitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: SoftTypography.body.copyWith(color: tokens.textPrimary, fontWeight: FontWeight.w600),
+              ),
+            ),
+            const SizedBox(width: 6.0),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7.0, vertical: 2.0),
+              decoration: BoxDecoration(
+                color: tokens.accentSoft,
+                borderRadius: BorderRadius.circular(SoftRadius.pill),
+              ),
+              child: Text(badgeLabel, style: SoftTypography.micro.copyWith(color: tokens.accent)),
+            ),
+          ]),
+          subtitle: Text(
+            subtitleText,
+            style: SoftTypography.micro.copyWith(color: tokens.textSecondary),
+          ),
+          trailing: Icon(Icons.chevron_right_rounded, size: 18.0, color: tokens.textTertiary),
+          onTap: () => onOpenReceived(rec),
         ),
-        subtitle: Text(
-          isBook ? '本地藏书 · ${rec.item.itemCount} 章 · $h:$m' : '书源规则 · ${rec.item.itemCount} 条 · $h:$m',
-          style: SoftTypography.micro.copyWith(color: tokens.textSecondary),
-        ),
-        trailing: Icon(Icons.chevron_right_rounded, size: 18.0, color: tokens.textTertiary),
-        onTap: () => onOpenReceived(rec),
       ),
     );
   }

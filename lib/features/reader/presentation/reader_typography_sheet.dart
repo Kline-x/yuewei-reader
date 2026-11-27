@@ -1,12 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import '../../../design_system/components/soft_bottom_sheet.dart';
 import '../../../design_system/tokens/soft_metrics.dart';
 import '../../../design_system/tokens/soft_tokens.dart';
 import '../engine/page_models.dart';
+import '../fonts/custom_font_manager.dart';
+import 'reader_font_sheet.dart';
 import 'reader_settings_provider.dart';
+import 'reader_typography_sliders.dart';
 
-/// 阅读器排版设置底部抽屉（字号滑轨 + 行距 + 4种翻页 + 带中文名的5款纸张底色）
+/// 阅读器排版设置底部抽屉（字号 + 阅读字体 + 行距 + 精细排版 + 5 模式翻页 + 5 款纸感色板）
 class ReaderTypographySheet extends ConsumerWidget {
   const ReaderTypographySheet({super.key});
 
@@ -15,8 +19,31 @@ class ReaderTypographySheet extends ConsumerWidget {
       context,
       title: '排版与纸感设置',
       headerIcon: Icons.text_fields_rounded,
-      maxHeightFactor: 0.72,
+      maxHeightFactor: 0.78,
       builder: (_) => const ReaderTypographySheet(),
+    );
+  }
+
+  static String _resolveFontLabel(
+    String? fontFamily,
+    List<CustomFontEntry> fonts,
+  ) {
+    if (fontFamily == null || fontFamily.trim().isEmpty) return '系统默认';
+    for (final entry in fonts) {
+      if (entry.fontFamily == fontFamily) return entry.displayName;
+    }
+    return '自定义字体';
+  }
+
+  void _openFontSheet(BuildContext context) {
+    final nav = Navigator.of(context);
+    final router = GoRouter.maybeOf(context);
+    ReaderFontSheet.show(
+      context,
+      onWifiTransfer: () {
+        if (nav.canPop()) nav.pop();
+        router?.push('/import');
+      },
     );
   }
 
@@ -24,7 +51,9 @@ class ReaderTypographySheet extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final tokens = SoftTokens.of(context);
     final settings = ref.watch(readerSettingsProvider);
+    final fonts = ref.watch(customFontManagerProvider);
     final notifier = ref.read(readerSettingsProvider.notifier);
+    final fontLabel = _resolveFontLabel(settings.fontFamily, fonts);
 
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(
@@ -56,6 +85,7 @@ class ReaderTypographySheet extends ConsumerWidget {
               Expanded(
                 flex: 4,
                 child: Slider(
+                  key: const Key('typo_font_size_slider'),
                   min: 14.0,
                   max: 30.0,
                   divisions: 16,
@@ -85,21 +115,82 @@ class ReaderTypographySheet extends ConsumerWidget {
           ),
           const SizedBox(height: SoftSpacing.md),
 
-          // 2. 行距调节
+          // 2. 阅读字体入口
+          Material(
+            key: const Key('typo_font_entry_row'),
+            color: tokens.surface,
+            borderRadius: BorderRadius.circular(SoftRadius.subCard),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(SoftRadius.subCard),
+              onTap: () => _openFontSheet(context),
+              child: Container(
+                constraints: const BoxConstraints(minHeight: 48.0),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: SoftSpacing.md,
+                  vertical: 12.0,
+                ),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(SoftRadius.subCard),
+                  border: Border.all(color: tokens.borderSubtle, width: 0.8),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.font_download_outlined,
+                      size: 18.0,
+                      color: tokens.accent,
+                    ),
+                    const SizedBox(width: 8.0),
+                    Text(
+                      '阅读字体',
+                      style: SoftTypography.body.copyWith(
+                        color: tokens.textPrimary,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(width: 12.0),
+                    Expanded(
+                      child: Text(
+                        fontLabel,
+                        textAlign: TextAlign.end,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: SoftTypography.caption.copyWith(
+                          color: tokens.accent,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 4.0),
+                    Icon(
+                      Icons.chevron_right_rounded,
+                      size: 18.0,
+                      color: tokens.textTertiary,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: SoftSpacing.lg),
+
+          // 3. 行距密度
           Text(
             '行距密度',
             style: SoftTypography.caption.copyWith(color: tokens.textSecondary),
           ),
           const SizedBox(height: SoftSpacing.sm),
           Row(
-            children: LineSpacingPreset.values.map((preset) {
-              final selected = settings.spacingPreset == preset;
+            children: LineSpacingPreset.values.asMap().entries.map((entry) {
+              final i = entry.key;
+              final preset = entry.value;
+              final isLast = i == LineSpacingPreset.values.length - 1;
               return Expanded(
                 child: Padding(
-                  padding: const EdgeInsets.only(right: 8.0),
-                  child: _ChoicePill(
+                  padding: EdgeInsets.only(right: isLast ? 0.0 : 8.0),
+                  child: TypographyChoicePill(
                     label: preset.label,
-                    selected: selected,
+                    selected: settings.spacingPreset == preset,
                     onTap: () => notifier.setSpacing(preset),
                   ),
                 ),
@@ -108,7 +199,11 @@ class ReaderTypographySheet extends ConsumerWidget {
           ),
           const SizedBox(height: SoftSpacing.lg),
 
-          // 3. 翻页动效（仿 QQ 阅读 5 模式：仿真 / 覆盖 / 平移 / 上下 / 无）
+          // 4. 精细排版滑杆与版式控制
+          const ReaderTypographySliders(),
+          const SizedBox(height: SoftSpacing.lg),
+
+          // 5. 翻页动效（5 模式：仿真 / 覆盖 / 平移 / 上下 / 无）
           Text(
             '翻页方式',
             style: SoftTypography.caption.copyWith(color: tokens.textSecondary),
@@ -118,14 +213,13 @@ class ReaderTypographySheet extends ConsumerWidget {
             children: PageTurnMode.values.asMap().entries.map((entry) {
               final i = entry.key;
               final mode = entry.value;
-              final selected = settings.turnMode == mode;
               final isLast = i == PageTurnMode.values.length - 1;
               return Expanded(
                 child: Padding(
                   padding: EdgeInsets.only(right: isLast ? 0.0 : 6.0),
-                  child: _ChoicePill(
+                  child: TypographyChoicePill(
                     label: mode.label,
-                    selected: selected,
+                    selected: settings.turnMode == mode,
                     onTap: () => notifier.setTurnMode(mode),
                   ),
                 ),
@@ -134,7 +228,7 @@ class ReaderTypographySheet extends ConsumerWidget {
           ),
           const SizedBox(height: SoftSpacing.lg),
 
-          // 4. 带明确中文名标签的 5 款护眼纸张底色
+          // 6. 5 款护眼纸张底色
           Text(
             '纸感色板',
             style: SoftTypography.caption.copyWith(color: tokens.textSecondary),
@@ -184,49 +278,6 @@ class ReaderTypographySheet extends ConsumerWidget {
             }).toList(),
           ),
         ],
-      ),
-    );
-  }
-}
-
-class _ChoicePill extends StatelessWidget {
-  const _ChoicePill({
-    required this.label,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final tokens = SoftTokens.of(context);
-    return Material(
-      color: selected ? tokens.accent : tokens.surface,
-      borderRadius: BorderRadius.circular(SoftRadius.pill),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(SoftRadius.pill),
-        onTap: onTap,
-        child: Container(
-          height: 40.0,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(SoftRadius.pill),
-            border: Border.all(
-              color: selected ? tokens.accent : tokens.borderSubtle,
-              width: 0.8,
-            ),
-          ),
-          child: Text(
-            label,
-            style: SoftTypography.caption.copyWith(
-              color: selected ? tokens.onAccent : tokens.textPrimary,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ),
       ),
     );
   }

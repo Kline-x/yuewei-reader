@@ -9,6 +9,7 @@ import '../design_system/tokens/soft_tokens.dart';
 import '../features/download/download_manager.dart';
 import '../features/local_import/data/local_import_service.dart';
 import '../features/local_import/wifi/wifi_transfer_server.dart';
+import '../features/reader/fonts/custom_font_manager.dart';
 import '../features/shelf/data/shelf_repository.dart';
 import '../features/sources/data/source_repository.dart';
 import '../features/sources/engine/source_crawler_service.dart';
@@ -71,6 +72,17 @@ final wifiTransferServerProvider = Provider<WifiTransferServer>((ref) {
   final server = WifiTransferServer(
     localImportService: ref.watch(localImportServiceProvider),
     sourceRepository: ref.watch(sourceRepositoryProvider),
+    customFontImporter: (fileName, bytes) async {
+      final entry = await ref
+          .read(customFontManagerProvider.notifier)
+          .importFontBytes(fileName: fileName, bytes: bytes);
+      return WifiImportedFont(
+        id: entry.id,
+        displayName: entry.displayName,
+        fontFamily: entry.fontFamily,
+        fileSizeBytes: entry.fileSizeBytes,
+      );
+    },
   );
   ref.onDispose(() => server.dispose());
   return server;

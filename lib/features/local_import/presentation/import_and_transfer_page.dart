@@ -57,12 +57,16 @@ class _ImportAndTransferPageState extends ConsumerState<ImportAndTransferPage> {
         : null;
     if (!mounted) return;
     setState(() => _received.insert(0, (item: item, bookId: bookId)));
-    AppFeedback.showToast(
-      context,
-      item.kind == 'book'
-          ? '收到书籍《${item.displayTitle}》（${item.itemCount} 章）'
-          : '已导入 ${item.itemCount} 条书源规则',
-    );
+    final String toastMsg;
+    switch (item.kind) {
+      case 'book':
+        toastMsg = '收到书籍《${item.displayTitle}》（${item.itemCount} 章）';
+      case 'font':
+        toastMsg = '已导入字体「${item.displayTitle}」';
+      default:
+        toastMsg = '已导入 ${item.itemCount} 条书源规则';
+    }
+    AppFeedback.showToast(context, toastMsg);
   }
 
   Future<String?> _findLocalBookId(String title) async {
@@ -134,6 +138,10 @@ class _ImportAndTransferPageState extends ConsumerState<ImportAndTransferPage> {
   Future<void> _openReceived(WifiReceivedEntry rec) async {
     if (rec.item.kind == 'source') {
       context.push('/sources');
+      return;
+    }
+    if (rec.item.kind == 'font') {
+      AppFeedback.showToast(context, '可在阅读器排版设置中选用该字体');
       return;
     }
     final directId = rec.item.bookId?.trim();
