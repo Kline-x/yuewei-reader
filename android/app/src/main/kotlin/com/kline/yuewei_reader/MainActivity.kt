@@ -26,6 +26,7 @@ class MainActivity : FlutterActivity() {
     private var pendingFilePickerResult: MethodChannel.Result? = null
     private val ioExecutor = Executors.newSingleThreadExecutor()
     private var ttsAndBackupHelper: NativeTtsAndBackupHelper? = null
+    private var appUpdateHelper: NativeAppUpdateHelper? = null
 
     @Volatile
     private var volumeKeyInterceptEnabled: Boolean = false
@@ -35,8 +36,11 @@ class MainActivity : FlutterActivity() {
         val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
         hostChannel = channel
         ttsAndBackupHelper?.shutdown()
+        appUpdateHelper?.shutdown()
         val helper = NativeTtsAndBackupHelper(this, ioExecutor) { hostChannel }
+        val updateHelper = NativeAppUpdateHelper(this, ioExecutor)
         ttsAndBackupHelper = helper
+        appUpdateHelper = updateHelper
         channel.setMethodCallHandler { call, result ->
             when (call.method) {
                 "getHostCapabilities" -> {
@@ -138,6 +142,21 @@ class MainActivity : FlutterActivity() {
                     )
                 }
 
+                "installApk" -> {
+                    val filePath = call.argument<String>("filePath") ?: ""
+                    val expectedSha256 = call.argument<String>("expectedSha256")
+                    updateHelper.installApk(
+                        filePath = filePath,
+                        expectedSha256 = expectedSha256,
+                        result = result
+                    )
+                }
+
+                "openExternalUrl" -> {
+                    val url = call.argument<String>("url") ?: ""
+                    updateHelper.openExternalUrl(url, result)
+                }
+
                 else -> result.notImplemented()
             }
         }
@@ -164,17 +183,19 @@ class MainActivity : FlutterActivity() {
         }
 
         ioExecutor.execute {
+            var destFile: File? = null
             try {
                 val displayName = resolveDisplayName(uri)
                 val targetDir = File(cacheDir, "picked_books").apply { mkdirs() }
                 val safeName = sanitizePickedFileName(displayName, uri)
-                val destFile = File(targetDir, "${System.currentTimeMillis()}_$safeName")
+                val candidate = File(targetDir, "${System.currentTimeMillis()}_$safeName")
                 val targetPrefix = targetDir.canonicalPath.trimEnd(File.separatorChar) + File.separator
-                if (!destFile.canonicalPath.startsWith(targetPrefix)) {
+                if (!candidate.canonicalPath.startsWith(targetPrefix)) {
                     throw SecurityException("非法目标文件路径")
                 }
+                destFile = candidate
                 contentResolver.openInputStream(uri)?.use { input ->
-                    FileOutputStream(destFile).use { output ->
+                    FileOutputStream(candidate).use { output ->
                         val buffer = ByteArray(16 * 1024)
                         while (true) {
                             val count = input.read(buffer)
@@ -186,14 +207,20 @@ class MainActivity : FlutterActivity() {
                 } ?: throw IllegalStateException("无法打开选中文件输入流")
 
                 val payload = mapOf(
-                    "path" to destFile.absolutePath,
+                    "path" to candidate.absolutePath,
                     "name" to displayName,
-                    "size" to destFile.length()
+                    "size" to candidate.length()
                 )
                 runOnUiThread {
                     if (!isFinishing && !isDestroyed) pending.success(payload)
                 }
             } catch (e: Exception) {
+                try {
+                    if (destFile?.exists() == true) {
+                        destFile.delete()
+                    }
+                } catch (_: Exception) {
+                }
                 runOnUiThread {
                     if (!isFinishing && !isDestroyed) {
                         pending.error("COPY_FAILED", e.message ?: "读取选中文件失败", null)
@@ -264,10 +291,14 @@ class MainActivity : FlutterActivity() {
 
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
         volumeKeyInterceptEnabled = false
+        pendingFilePickerResult?.success(null)
+        pendingFilePickerResult = null
         hostChannel?.setMethodCallHandler(null)
         hostChannel = null
         ttsAndBackupHelper?.shutdown()
         ttsAndBackupHelper = null
+        appUpdateHelper?.shutdown()
+        appUpdateHelper = null
         super.cleanUpFlutterEngine(flutterEngine)
     }
 
@@ -277,6 +308,8 @@ class MainActivity : FlutterActivity() {
         pendingFilePickerResult = null
         ttsAndBackupHelper?.shutdown()
         ttsAndBackupHelper = null
+        appUpdateHelper?.shutdown()
+        appUpdateHelper = null
         ioExecutor.shutdownNow()
         super.onDestroy()
     }

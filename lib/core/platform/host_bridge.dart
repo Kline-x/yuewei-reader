@@ -237,4 +237,51 @@ class HostBridge {
       return null;
     }
   }
+
+  /// 调起系统安装器安装已下载 APK（Android 端支持 SHA-256 校验与权限引导；iOS 返回 UNSUPPORTED）
+  Future<String> installApk({
+    required String filePath,
+    String? expectedSha256,
+  }) async {
+    final cleanPath = filePath.trim();
+    if (cleanPath.isEmpty) {
+      return 'FAILED:安装包路径为空';
+    }
+    try {
+      final status = await _channel.invokeMethod<String>('installApk', {
+        'filePath': cleanPath,
+        if (expectedSha256 != null && expectedSha256.trim().isNotEmpty)
+          'expectedSha256': expectedSha256.trim(),
+      });
+      if (status == null || status.trim().isEmpty) {
+        return 'FAILED:宿主未返回安装结果';
+      }
+      return status.trim();
+    } on MissingPluginException {
+      return 'UNSUPPORTED';
+    } on PlatformException catch (e) {
+      return 'FAILED:${e.message ?? e.code}';
+    }
+  }
+
+  /// 使用系统浏览器安全打开外部 HTTP/HTTPS 链接
+  Future<bool> openExternalUrl(String url) async {
+    final trimmed = url.trim();
+    final uri = Uri.tryParse(trimmed);
+    if (uri == null ||
+        (uri.scheme != 'http' && uri.scheme != 'https') ||
+        uri.host.isEmpty) {
+      return false;
+    }
+    try {
+      return (await _channel.invokeMethod<bool>('openExternalUrl', {
+            'url': trimmed,
+          })) ??
+          false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
 }

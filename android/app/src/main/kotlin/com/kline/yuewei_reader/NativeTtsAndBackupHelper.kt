@@ -1,8 +1,11 @@
 package com.kline.yuewei_reader
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -40,6 +43,18 @@ class NativeTtsAndBackupHelper(
     )
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val audioManager: AudioManager? =
+        activity.applicationContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+    private var audioFocusRequest: AudioFocusRequest? = null
+    private var hasAudioFocus: Boolean = false
+    private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
+        if (focusChange == AudioManager.AUDIOFOCUS_LOSS ||
+            focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT
+        ) {
+            mainHandler.post { handleAudioFocusLost() }
+        }
+    }
+
     private var tts: TextToSpeech? = null
     // 0: 未初始化, 1: 初始化中, 2: 就绪可用, -1: 不可用
     private var ttsInitState: Int = 0
@@ -160,7 +175,79 @@ class NativeTtsAndBackupHelper(
                     resetFailedTts()
                 }
             }
+            abandonAudioFocus()
             result.success(true)
+        }
+    }
+
+    private fun requestAudioFocus(): Boolean {
+        val manager = audioManager ?: return true
+        if (hasAudioFocus) return true
+        val grantResult = try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val attrs = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+                val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                    .setAudioAttributes(attrs)
+                    .setOnAudioFocusChangeListener(audioFocusChangeListener, mainHandler)
+                    .setAcceptsDelayedFocusGain(false)
+                    .setWillPauseWhenDucked(false)
+                    .build()
+                audioFocusRequest = req
+                manager.requestAudioFocus(req)
+            } else {
+                @Suppress("DEPRECATION")
+                manager.requestAudioFocus(
+                    audioFocusChangeListener,
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.AUDIOFOCUS_GAIN
+                )
+            }
+        } catch (_: Exception) {
+            AudioManager.AUDIOFOCUS_REQUEST_FAILED
+        }
+        hasAudioFocus = grantResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        return hasAudioFocus
+    }
+
+    private fun abandonAudioFocus() {
+        val manager = audioManager ?: return
+        if (!hasAudioFocus && audioFocusRequest == null) return
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                audioFocusRequest?.let { manager.abandonAudioFocusRequest(it) }
+                audioFocusRequest = null
+            } else {
+                @Suppress("DEPRECATION")
+                manager.abandonAudioFocus(audioFocusChangeListener)
+            }
+        } catch (_: Exception) {
+        } finally {
+            hasAudioFocus = false
+        }
+    }
+
+    private fun handleAudioFocusLost() {
+        if (isShutdown) return
+        val interruptedId = activeUtteranceId
+        activeUtteranceId = null
+        pendingSpeak?.result?.success(false)
+        pendingSpeak = null
+        try {
+            tts?.stop()
+        } catch (_: Exception) {
+        }
+        abandonAudioFocus()
+        if (!interruptedId.isNullOrEmpty()) {
+            channelProvider()?.invokeMethod(
+                "onTtsError",
+                mapOf(
+                    "utteranceId" to interruptedId,
+                    "message" to "语音播放被系统打断"
+                )
+            )
         }
     }
 
@@ -171,6 +258,7 @@ class NativeTtsAndBackupHelper(
             tts?.shutdown()
         } catch (_: Exception) {
         }
+        abandonAudioFocus()
         tts = null
         ttsInitState = 0
     }
@@ -218,6 +306,12 @@ class NativeTtsAndBackupHelper(
                 override fun onError(utteranceId: String?, errorCode: Int) {
                     dispatchTtsError(utteranceId, "语音朗读失败($errorCode)")
                 }
+
+                override fun onStop(utteranceId: String?, interrupted: Boolean) {
+                    if (interrupted) {
+                        dispatchTtsError(utteranceId, "语音播放被系统打断")
+                    }
+                }
             })
             tts = engine
         } catch (_: Exception) {
@@ -230,6 +324,7 @@ class NativeTtsAndBackupHelper(
         mainHandler.post {
             if (!isShutdown && utteranceId == activeUtteranceId) {
                 activeUtteranceId = null
+                abandonAudioFocus()
                 channelProvider()?.invokeMethod(
                     "onTtsError",
                     mapOf("utteranceId" to utteranceId, "message" to message)
@@ -315,7 +410,24 @@ class NativeTtsAndBackupHelper(
             return
         }
         val maxLen = TextToSpeech.getMaxSpeechInputLength()
-        val safeText = if (maxLen > 0 && text.length > maxLen) text.substring(0, maxLen) else text
+        val safeText = if (maxLen > 0 && text.length > maxLen) {
+            var cut = maxLen
+            // 回退避开 UTF-16 High Surrogate，避免截断在 Emoji 或增补汉字代理对中间
+            if (cut > 0 && Character.isHighSurrogate(text[cut - 1])) {
+                cut--
+            }
+            text.substring(0, cut)
+        } else {
+            text
+        }
+        if (safeText.isBlank()) {
+            result.success(false)
+            return
+        }
+        if (!requestAudioFocus()) {
+            result.success(false)
+            return
+        }
         val clampedRate = rate.coerceIn(0.5f, 2.5f)
         activeUtteranceId = utteranceId
         val code = try {
@@ -332,6 +444,7 @@ class NativeTtsAndBackupHelper(
                 enqueuePendingSpeak(text, utteranceId, rate, result)
                 return
             }
+            abandonAudioFocus()
             result.success(false)
         } else {
             result.success(true)
@@ -581,6 +694,7 @@ class NativeTtsAndBackupHelper(
             tts?.shutdown()
         } catch (_: Exception) {
         }
+        abandonAudioFocus()
         tts = null
         ttsInitState = 0
     }

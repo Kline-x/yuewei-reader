@@ -84,6 +84,7 @@ class SettingsNavTile extends StatelessWidget {
     required this.subtitle,
     required this.onTap,
     this.isDanger = false,
+    this.trailing,
   });
 
   final IconData icon;
@@ -91,6 +92,7 @@ class SettingsNavTile extends StatelessWidget {
   final String subtitle;
   final VoidCallback? onTap;
   final bool isDanger;
+  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
@@ -128,6 +130,10 @@ class SettingsNavTile extends StatelessWidget {
                 ],
               ),
             ),
+            if (trailing != null) ...[
+              const SizedBox(width: SoftSpacing.sm),
+              trailing!,
+            ],
             Icon(Icons.chevron_right_rounded, color: tokens.textTertiary),
           ],
         ),
