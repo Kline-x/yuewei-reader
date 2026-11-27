@@ -2,18 +2,20 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/providers.dart';
 import '../../core/platform/host_bridge.dart';
+import 'tts_background_chapter_loader.dart';
 import 'tts_models.dart';
 
 export 'tts_models.dart';
 part 'tts_playback_ops.dart';
 
-/// 沉浸 TTS 听书状态机（段级/超长段安全切片推进、跨章续播、5档倍速持久化与暂停冻时睡眠定时）
+/// 沉浸 TTS 听书状态机（后台自主跨章、锁屏媒控联动、超长段切片、5档倍速持久化与暂停冻时睡眠定时）
 class TtsController extends Notifier<TtsState> {
   static const String speechRatePrefKey = 'yuewei_tts_speech_rate';
   static const List<double> supportedRates = [0.75, 1.0, 1.25, 1.5, 1.75];
 
   StreamSubscription<({String utteranceId, bool isError, String? message})>?
       _eventSub;
+  StreamSubscription<MediaCommandAction>? _mediaSub;
   Timer? _sleepTimer;
   Object? _callbackOwner;
   TtsLocateCallback? _onLocate;
@@ -35,6 +37,9 @@ class TtsController extends Notifier<TtsState> {
     _chunkIndex = 0;
     _eventSub?.cancel();
     _eventSub = HostBridge.instance.ttsEventStream.listen(_handleNativeEvent);
+    _mediaSub?.cancel();
+    _mediaSub =
+        HostBridge.instance.mediaCommandStream.listen(_handleMediaCommand);
     ref.onDispose(_disposeResources);
     _loadPersistedRate();
     return const TtsState();
@@ -44,10 +49,13 @@ class TtsController extends Notifier<TtsState> {
     _disposed = true;
     _sleepTimer?.cancel();
     _eventSub?.cancel();
+    _mediaSub?.cancel();
     _chunks = const [];
     _chunkIndex = 0;
-    _sleepTimer = _eventSub =
-        _activeUtteranceId = _callbackOwner = _onLocate = _onRequestChapter = null;
+    _sleepTimer = null;
+    _eventSub = null;
+    _mediaSub = null;
+    _activeUtteranceId = _callbackOwner = _onLocate = _onRequestChapter = null;
   }
 
   Future<void> _loadPersistedRate() =>
@@ -107,10 +115,39 @@ class TtsController extends Notifier<TtsState> {
     required Object owner,
     required TtsLocateCallback onLocate,
     required TtsRequestChapterCallback onRequestChapter,
+    bool deferStateNotify = false,
   }) {
     _callbackOwner = owner;
     _onLocate = onLocate;
     _onRequestChapter = onRequestChapter;
+    _updateReaderAttached(owner: owner, attached: true, defer: deferStateNotify);
+  }
+
+  /// 脱离阅读器回调绑定并置 `isReaderAttached = false`，但绝不中断正在活跃的 TTS 后台续播
+  void detachReader(Object owner, {bool deferStateNotify = false}) {
+    if (_callbackOwner != owner) return;
+    _callbackOwner = _onLocate = _onRequestChapter = null;
+    _updateReaderAttached(owner: null, attached: false, defer: deferStateNotify);
+  }
+
+  void _updateReaderAttached({
+    required Object? owner,
+    required bool attached,
+    required bool defer,
+  }) {
+    if (_disposed || state.isReaderAttached == attached) return;
+    if (!defer) {
+      state = state.copyWith(isReaderAttached: attached);
+      return;
+    }
+    Future.microtask(() {
+      if (_disposed) return;
+      if (attached && _callbackOwner != owner) return;
+      if (!attached && _callbackOwner != null) return;
+      if (state.isReaderAttached != attached) {
+        state = state.copyWith(isReaderAttached: attached);
+      }
+    });
   }
 
   void unbindAndStopOnDispose(Object owner) {
@@ -119,13 +156,17 @@ class TtsController extends Notifier<TtsState> {
     if (_callbackOwner == owner) {
       _callbackOwner = _onLocate = _onRequestChapter = null;
     }
-    if (!state.isActive) return;
+    if (!state.isActive) {
+      _updateReaderAttached(owner: null, attached: false, defer: true);
+      return;
+    }
     final stopGen = ++_opGen;
     _activeUtteranceId = null;
     _chunks = const [];
     _chunkIndex = 0;
     _sleepTimer?.cancel();
     _sleepTimer = null;
+    unawaited(HostBridge.instance.clearMediaSession());
     unawaited(HostBridge.instance.ttsStop());
     final savedRate = state.speechRate;
     Future.microtask(() {
@@ -137,6 +178,9 @@ class TtsController extends Notifier<TtsState> {
 
   Future<bool> startReading({
     required String bookId,
+    String bookTitle = '',
+    String author = '',
+    String coverUrl = '',
     required int chapterIndex,
     required String chapterTitle,
     required List<String> paragraphs,
@@ -153,6 +197,10 @@ class TtsController extends Notifier<TtsState> {
     state = state.copyWith(
       status: TtsPlaybackStatus.playing,
       bookId: bookId,
+      bookTitle: bookTitle,
+      author: author,
+      coverUrl: coverUrl,
+      isReaderAttached: _callbackOwner != null,
       chapterIndex: chapterIndex,
       chapterTitle: chapterTitle,
       totalChapters: totalChapters,
@@ -168,6 +216,7 @@ class TtsController extends Notifier<TtsState> {
     _opGen++;
     _activeUtteranceId = null;
     state = state.copyWith(status: TtsPlaybackStatus.paused);
+    _syncMediaSession();
     await HostBridge.instance.ttsStop();
   }
 
@@ -250,8 +299,14 @@ class TtsController extends Notifier<TtsState> {
     _chunkIndex = 0;
     _sleepTimer?.cancel();
     _sleepTimer = null;
-    state = TtsState(speechRate: state.speechRate);
-    await HostBridge.instance.ttsStop();
+    state = TtsState(
+      speechRate: state.speechRate,
+      isReaderAttached: _callbackOwner != null,
+    );
+    await Future.wait([
+      HostBridge.instance.clearMediaSession(),
+      HostBridge.instance.ttsStop(),
+    ]);
   }
 }
 
