@@ -73,5 +73,5 @@
   - 代码体积门禁：`lib/` 与 `test/` 共 **131 个**非生成 `.dart` 文件，**100% 严格 `<= 350` 行**（单文件最大 **348 行**，累计 **28,165 行**）。
   - 静态分析：`flutter analyze` **0 issues**；`swiftc -parse ios/Runner/AppDelegate.swift` 与 `plutil -lint ios/Runner/Info.plist` 通过。
   - 单元测试：`flutter test` **78/78**（14 个测试文件）全绿通过。
-  - Android Release 产物：`app-release.apk`（`arm64-v8a`，`1.0.1+2`）体积 **29,269,975 字节**，SHA-256：`efdf522d04a8a9e9348d9edc398dc245f0f90dead03c8782a223c61fa1b9fb5e`。
+  - Android Release 产物：云端 CI Run [`#45958131223`](https://github.com/Kline-x/yuewei-reader/actions/runs/45958131223) 已启用正式签名 Secrets 构建并发布 `v1.0.1` GitHub Release，`app-release.apk`（`arm64-v8a`，`1.0.1+2`）体积 **29,269,975 字节**，SHA-256：`891c7357302dd3372f5d58ed716ea97f98c3479bc6f060996d377e7caafe0171`，APK 签名证书 SHA-256 指纹：`4d5632e3d50e16383185ff0555723321fa643aa25e6d5da60c44e68b98c92eea`。
   - 真机 E2E 回归（Redmi K60 `22ecd9e7`）：两轮真机扩大范围回归闭环，强杀冷启耗时 **894ms**（预热 **380ms**，二轮 `v1.0.1` **664ms**），求书网刷新净洗简介并保留 `7 / 1654 章 (64.7 KB)` 缓存、设置页展示 `v1.0.1 (2)` 并实网校验最新、Wi-Fi 传书 401 鉴权与退页自动停服、双行标题与五模式/连续滚动重锚定、TTS 音量键释放全链路实测通过，`logcat` 全程零应用级崩溃与异常。
