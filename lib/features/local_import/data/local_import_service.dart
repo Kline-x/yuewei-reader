@@ -7,15 +7,19 @@ import '../../sources/domain/book_match_models.dart';
 import '../engine/charset_and_txt_parser.dart';
 import '../engine/epub_book_parser.dart';
 
-/// 本地 TXT / EPUB 书籍导入服务（幂等防重入 + 冷热分离落盘 + 事务入库）
+/// 本地 TXT / EPUB 书籍导入服务（幂等防重入 + 120MB OOM 防护 + 临时副本回收）
 class LocalImportService {
   LocalImportService({
     required this.db,
     required this.fileStore,
+    this.maxFileBytes = maxImportFileBytes,
   });
+
+  static const int maxImportFileBytes = 120 * 1024 * 1024;
 
   final AppDatabase db;
   final ChapterFileStore fileStore;
+  final int maxFileBytes;
 
   /// 根据文件字节生成幂等 `local_<shortHash>` 主键，防止重复导入产生多条书架记录
   static String computeBookId(List<int> bytes) {
@@ -34,26 +38,48 @@ class LocalImportService {
     return 'local_$hex1$hex2';
   }
 
-  /// 从本地沙盒临时路径读取并导入 TXT / EPUB
+  /// 从本地沙盒临时路径读取并导入 TXT / EPUB（超 120MB 拦截，结束后自动清理 picked_books/ 副本）
   Future<Book> importFromFile(
     String filePath, {
     String? originalFileName,
   }) async {
     final file = File(filePath);
-    if (!await file.exists()) {
-      throw FileSystemException('本地书籍文件不存在', filePath);
+    try {
+      if (!await file.exists()) {
+        throw FileSystemException('本地书籍文件不存在', filePath);
+      }
+      final fileSize = await file.length();
+      if (fileSize > maxFileBytes) {
+        throw const FormatException('所选书籍文件超过 120MB 上限，暂不支持导入');
+      }
+      final bytes = await file.readAsBytes();
+      final name = (originalFileName != null && originalFileName.trim().isNotEmpty)
+          ? originalFileName.trim()
+          : p.basename(filePath);
+      return await importFromBytes(name, bytes);
+    } finally {
+      await _cleanupPickedTempCopy(file);
     }
-    final bytes = await file.readAsBytes();
-    final name = (originalFileName != null && originalFileName.trim().isNotEmpty)
-        ? originalFileName.trim()
-        : p.basename(filePath);
-    return importFromBytes(name, bytes);
+  }
+
+  /// 仅清理位于沙盒临时目录 picked_books/ 路径段下的源拷贝副本，杜绝沙盒磁盘泄漏
+  static Future<void> _cleanupPickedTempCopy(File file) async {
+    try {
+      final segments = p.split(file.path);
+      if (!segments.contains('picked_books')) return;
+      if (await file.exists()) {
+        await file.delete();
+      }
+    } catch (_) {}
   }
 
   /// 从原始字节流解析并导入本地书籍（同时供原生选择器与 Wi-Fi 传书复用）
   Future<Book> importFromBytes(String fileName, List<int> bytes) async {
     if (bytes.isEmpty) {
       throw const FormatException('所选文件为空，无法导入');
+    }
+    if (bytes.length > maxFileBytes) {
+      throw const FormatException('所选书籍文件超过 120MB 上限，暂不支持导入');
     }
 
     final isEpub = _looksLikeEpub(fileName, bytes);

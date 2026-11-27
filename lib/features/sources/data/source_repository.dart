@@ -38,6 +38,7 @@ class SourceRepository {
               ),
             );
       } else if (old.isBuiltin) {
+        final syncedRule = src.copyWith(enabled: old.enabled, isBuiltin: true);
         await (db.update(db.bookSources)..where((t) => t.id.equals(src.id)))
             .write(
           BookSourcesCompanion(
@@ -45,7 +46,7 @@ class SourceRepository {
             baseUrl: Value(src.baseUrl),
             groupName: Value(src.groupName),
             charset: Value(src.charset),
-            ruleJson: Value(src.toJsonString()),
+            ruleJson: Value(syncedRule.toJsonString()),
           ),
         );
       }
@@ -75,20 +76,8 @@ class SourceRepository {
           ..where((t) => t.id.equals(sourceId)))
         .getSingleOrNull();
     if (row == null) return;
-    final rule = BookSourceRule.fromJsonString(row.ruleJson);
-    final updatedRule = BookSourceRule(
-      id: rule.id,
-      name: rule.name,
-      baseUrl: rule.baseUrl,
-      groupName: rule.groupName,
-      charset: rule.charset,
-      enabled: enabled,
-      isBuiltin: rule.isBuiltin,
-      search: rule.search,
-      detail: rule.detail,
-      toc: rule.toc,
-      chapter: rule.chapter,
-    );
+    final updatedRule =
+        BookSourceRule.fromJsonString(row.ruleJson).copyWith(enabled: enabled);
     await (db.update(db.bookSources)..where((t) => t.id.equals(sourceId))).write(
       BookSourcesCompanion(
         enabled: Value(enabled),
@@ -97,7 +86,7 @@ class SourceRepository {
     );
   }
 
-  /// 解析并持久化外部 Legado 书源 JSON，返回成功导入条数
+  /// 解析并持久化外部 Legado 书源 JSON，过滤空 ID 与内置书源防篡改，返回成功导入条数
   Future<int> importLegadoJson(String rawJson) async {
     final List<BookSourceRule> parsed;
     try {
@@ -107,11 +96,27 @@ class SourceRepository {
     }
     if (parsed.isEmpty) return 0;
 
+    final existingBuiltinRows = await (db.select(db.bookSources)
+          ..where((t) => t.isBuiltin.equals(true)))
+        .get();
+    final builtinIds = <String>{
+      ...BuiltinSources.all.map((s) => s.id),
+      ...existingBuiltinRows.map((r) => r.id),
+    };
+    final allowed = parsed
+        .where((src) {
+          final id = src.id.trim();
+          return id.isNotEmpty && !builtinIds.contains(id);
+        })
+        .map((src) => src.copyWith(isBuiltin: false))
+        .toList();
+    if (allowed.isEmpty) return 0;
+
     await db.transaction(() async {
-      for (final src in parsed) {
+      for (final src in allowed) {
         await db.into(db.bookSources).insertOnConflictUpdate(
               BookSourcesCompanion.insert(
-                id: src.id,
+                id: src.id.trim(),
                 name: src.name,
                 baseUrl: src.baseUrl,
                 groupName: Value(src.groupName),
@@ -124,7 +129,7 @@ class SourceRepository {
             );
       }
     });
-    return parsed.length;
+    return allowed.length;
   }
 
   /// 通过远程 HTTP(S) 订阅链接拉取 Legado JSON（UTF-8 / GBK 自动兼容）并导入
@@ -233,7 +238,11 @@ class SourceRepository {
     if (!isXpathOrJson && f.attr.isNotEmpty && f.attr != defaultAttr) {
       out = '$out@${f.attr}';
     }
-    if (f.regex.isNotEmpty) out = '$out##${f.regex}';
+    if (f.regex.isNotEmpty) {
+      out = f.replacement.isEmpty
+          ? '$out##${f.regex}'
+          : '$out##${f.regex}##${f.replacement}';
+    }
     return out;
   }
 

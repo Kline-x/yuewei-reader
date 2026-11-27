@@ -1,3 +1,4 @@
+import 'package:characters/characters.dart';
 import '../domain/book_source_rule.dart';
 import 'rule_evaluator.dart';
 
@@ -74,7 +75,8 @@ class BookMetadataSanitizer {
         RegExp(r'各位书友要是觉得《.*》还不错').hasMatch(s)) {
       return '';
     }
-    return s.length > 600 ? '${s.substring(0, 600)}…' : s;
+    final chars = s.characters;
+    return chars.length > 600 ? '${chars.take(600)}…' : s;
   }
 
   /// 清洗章节更新时间（剥离前缀标签并拒绝“未知时间”或超长脏文本）

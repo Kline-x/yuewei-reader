@@ -4,32 +4,44 @@ import 'package:html/parser.dart' as html_parser;
 import 'package:json_path/json_path.dart';
 import 'package:xpath_selector_html_parser/xpath_selector_html_parser.dart';
 import '../domain/book_source_rule.dart';
+import 'rule_css_helper.dart';
 
-/// 多引擎规则求值器：CSS（支持 :contains 与 Legado .0/.-1 索引切片）+ XPath + JSONPath
+/// 多引擎规则求值器：CSS（支持 :contains、Legado .0/.-1 索引与 || 回退链）+ XPath + JSONPath
 class RuleEvaluator {
   const RuleEvaluator();
 
-  /// 将原始文本提取为节点封装列表，用于列表遍历（搜索结果 / 目录项）
+  /// 将原始文本提取为节点封装列表，用于列表遍历（搜索结果 / 目录项，支持 || 备选回退链）
   List<EvaluatedNode> selectNodes(String rawContent, String rule) {
     final trimmed = rule.trim();
     if (trimmed.isEmpty || rawContent.trim().isEmpty) return const [];
 
-    if (trimmed.startsWith(r'$.') || trimmed.startsWith('@json:')) {
-      final pathExpr = trimmed.replaceFirst(RegExp(r'^@json:'), '').trim();
-      return _selectJsonNodes(rawContent, pathExpr);
-    }
+    dom.Document? cachedDoc;
+    for (final branch in RuleCssHelper.splitFallbackChains(trimmed)) {
+      final expr = branch.trim();
+      if (expr.isEmpty) continue;
 
-    if (trimmed.startsWith('@xpath:') || trimmed.startsWith('//')) {
-      final xpExpr = trimmed.replaceFirst(RegExp(r'^@xpath:'), '').trim();
-      return _selectXpathNodes(rawContent, xpExpr);
+      List<EvaluatedNode> found;
+      if (expr.startsWith(r'$.') || expr.startsWith('@json:')) {
+        final pathExpr = expr.replaceFirst(RegExp(r'^@json:'), '').trim();
+        found = _selectJsonNodes(rawContent, pathExpr);
+      } else if (expr.startsWith('@xpath:') || expr.startsWith('//')) {
+        final xpExpr = expr.replaceFirst(RegExp(r'^@xpath:'), '').trim();
+        cachedDoc ??= html_parser.parse(rawContent);
+        found = _selectXpathNodes(cachedDoc, xpExpr);
+      } else {
+        cachedDoc ??= html_parser.parse(rawContent);
+        final elements = RuleCssHelper.queryCssElements(
+          cachedDoc.documentElement,
+          expr,
+        );
+        found = elements.map((e) => EvaluatedNode.html(e)).toList();
+      }
+      if (found.isNotEmpty) return found;
     }
-
-    final doc = html_parser.parse(rawContent);
-    final elements = _queryCssElements(doc.documentElement, trimmed);
-    return elements.map((e) => EvaluatedNode.html(e)).toList();
+    return const [];
   }
 
-  /// 在根文档或节点上提取单一字符串值
+  /// 在根文档或节点上提取单一字符串值（支持 || 备选回退链与 ##regex##replacement）
   String evaluateField(
     EvaluatedNode root,
     RuleField field, {
@@ -37,30 +49,55 @@ class RuleEvaluator {
   }) {
     if (field.isEmpty) return '';
 
-    String raw = '';
-    if (root.jsonValue != null) {
-      raw = _extractFromJson(root.jsonValue, field);
-    } else if (root.htmlTextFallback != null) {
-      raw = root.htmlTextFallback!;
-    } else if (root.element != null) {
-      raw = _extractFromHtmlElement(root.element!, field);
+    final defaultAttr = field.attr.trim().isEmpty ? 'text' : field.attr.trim();
+    final chains = field.selector.trim().isEmpty
+        ? const ['']
+        : RuleCssHelper.splitFallbackChains(field.selector.trim());
+
+    var raw = '';
+    var effectiveAttr = defaultAttr;
+
+    for (final branch in chains) {
+      final parsed = RuleCssHelper.parseBranchAttr(branch, defaultAttr);
+      final candidate = _extractSingleBranch(root, parsed.selector, parsed.attr);
+      if (candidate.isNotEmpty) {
+        raw = candidate;
+        effectiveAttr = parsed.attr;
+        break;
+      }
     }
 
     if (raw.isEmpty) return '';
 
     if (field.regex.isNotEmpty) {
       try {
-        raw = raw.replaceAll(RegExp(field.regex, multiLine: true), '');
+        raw = raw.replaceAll(
+          RegExp(field.regex, multiLine: true),
+          field.replacement,
+        );
       } catch (_) {}
     }
 
     raw = raw.trim();
     if (raw.isNotEmpty &&
-        (field.attr == 'href' || field.attr == 'src') &&
+        (effectiveAttr == 'href' || effectiveAttr == 'src') &&
         baseUrl.isNotEmpty) {
       raw = resolveUrl(baseUrl, raw);
     }
     return raw;
+  }
+
+  String _extractSingleBranch(EvaluatedNode root, String selector, String attr) {
+    if (root.jsonValue != null) {
+      return _extractFromJson(root.jsonValue, selector);
+    }
+    if (root.htmlTextFallback != null) {
+      return root.htmlTextFallback!;
+    }
+    if (root.element != null) {
+      return _extractFromHtmlElement(root.element!, selector, attr);
+    }
+    return '';
   }
 
   /// 解析并补全相对 URL
@@ -79,33 +116,9 @@ class RuleEvaluator {
     }
   }
 
-  /// 安全 HTML 实体解码（严格校验 Unicode 合法区间防止 RangeError 崩溃）
-  static String decodeHtmlEntities(String input) {
-    var out = input
-        .replaceAll('&nbsp;', ' ')
-        .replaceAll('&#160;', ' ')
-        .replaceAll('&amp;', '&')
-        .replaceAll('&lt;', '<')
-        .replaceAll('&gt;', '>')
-        .replaceAll('&quot;', '"')
-        .replaceAll('&#39;', "'")
-        .replaceAll('&apos;', "'")
-        .replaceAll('&mdash;', '—')
-        .replaceAll('&hellip;', '…')
-        .replaceAll('&ldquo;', '“')
-        .replaceAll('&rdquo;', '”');
-
-    out = out.replaceAllMapped(RegExp(r'&#(x?)([0-9a-fA-F]{1,8});'), (m) {
-      final isHex = m.group(1) == 'x';
-      final code = int.tryParse(m.group(2)!, radix: isHex ? 16 : 10);
-      if (code == null || code < 0x20 || code > 0x10FFFF) {
-        return '';
-      }
-      if (code >= 0xD800 && code <= 0xDFFF) return '';
-      return String.fromCharCode(code);
-    });
-    return out;
-  }
+  /// 安全 HTML 实体解码（严格校验 Unicode 合法区间并防 &amp;lt; 双重反转义）
+  static String decodeHtmlEntities(String input) =>
+      RuleCssHelper.decodeHtmlEntities(input);
 
   List<EvaluatedNode> _selectJsonNodes(String rawJson, String expr) {
     try {
@@ -129,10 +142,11 @@ class RuleEvaluator {
     }
   }
 
-  List<EvaluatedNode> _selectXpathNodes(String rawHtml, String expr) {
+  List<EvaluatedNode> _selectXpathNodes(dom.Document doc, String expr) {
     try {
-      final doc = html_parser.parse(rawHtml);
-      final xp = HtmlXPath.node(doc.documentElement!);
+      final rootEl = doc.documentElement;
+      if (rootEl == null) return const [];
+      final xp = HtmlXPath.node(rootEl);
       final result = xp.query(expr);
       return result.nodes.map((n) {
         final node = n.node;
@@ -144,8 +158,7 @@ class RuleEvaluator {
     }
   }
 
-  String _extractFromJson(dynamic jsonVal, RuleField field) {
-    final sel = field.selector.trim();
+  String _extractFromJson(dynamic jsonVal, String sel) {
     if (sel.isEmpty) return jsonVal.toString();
     try {
       final pathExpr = sel.startsWith(r'$') ? sel : '\$.$sel';
@@ -157,16 +170,22 @@ class RuleEvaluator {
     }
   }
 
-  String _extractFromHtmlElement(dom.Element el, RuleField field) {
-    final sel = field.selector.trim();
-    final attr = field.attr.trim().isEmpty ? 'text' : field.attr.trim();
-
+  String _extractFromHtmlElement(dom.Element el, String sel, String attr) {
     if (sel.startsWith('@xpath:') || sel.startsWith('//')) {
       final xpExpr = sel.replaceFirst(RegExp(r'^@xpath:'), '').trim();
       try {
         final hit = HtmlXPath.node(el).query(xpExpr).node;
         if (hit == null) return '';
-        if (attr == 'text') return hit.text ?? '';
+        final domNode = hit.node;
+        if (attr == 'html' && domNode is dom.Element) {
+          return _extractCleanInnerHtml(domNode);
+        }
+        if (attr == 'text' || attr == 'textNodes') {
+          if (domNode is dom.Element) {
+            return decodeHtmlEntities(_extractVisibleText(domNode)).trim();
+          }
+          return decodeHtmlEntities(hit.text ?? '').trim();
+        }
         return hit.attributes[attr] ?? hit.text ?? '';
       } catch (_) {
         return '';
@@ -175,13 +194,13 @@ class RuleEvaluator {
 
     dom.Element? target = el;
     if (sel.isNotEmpty) {
-      final hits = _queryCssElements(el, sel);
+      final hits = RuleCssHelper.queryCssElements(el, sel);
       if (hits.isEmpty) return '';
       target = hits.first;
     }
 
     if (attr == 'html') {
-      return target.innerHtml;
+      return _extractCleanInnerHtml(target);
     }
     if (attr == 'text' || attr == 'textNodes') {
       return decodeHtmlEntities(_extractVisibleText(target)).trim();
@@ -203,6 +222,18 @@ class RuleEvaluator {
     return (target.attributes[attr] ?? '').trim();
   }
 
+  /// 提取洁净 innerHtml：克隆节点并剥离全部 script/style/noscript 子树，杜绝脚本混入正文
+  static String _extractCleanInnerHtml(dom.Element target) {
+    if (target.querySelector('script, style, noscript') == null) {
+      return target.innerHtml;
+    }
+    final clone = target.clone(true);
+    for (final garbage in clone.querySelectorAll('script, style, noscript')) {
+      garbage.remove();
+    }
+    return clone.innerHtml;
+  }
+
   static String _extractVisibleText(dom.Element target) {
     if (target.querySelector('script, style, noscript') == null) {
       return target.text;
@@ -212,92 +243,6 @@ class RuleEvaluator {
       garbage.remove();
     }
     return clone.text;
-  }
-
-  /// 支持多分支逗号（保护括号内逗号）、`:contains(...)`、Legado 简写与 `.0`/`.-1` 索引切片
-  List<dom.Element> _queryCssElements(dom.Element? scope, String selector) {
-    if (scope == null || selector.trim().isEmpty) return const [];
-    final branches = _splitBranches(selector);
-    for (final branch in branches) {
-      final res = _querySingleBranch(scope, branch);
-      if (res.isNotEmpty) return res;
-    }
-    return const [];
-  }
-
-  List<dom.Element> _querySingleBranch(dom.Element scope, String rawBranch) {
-    var branch = rawBranch.trim();
-    if (branch.isEmpty) return const [];
-
-    // 解析末尾索引切片，例如 `.item.0` 或 `dd a.-1`
-    int? sliceIndex;
-    final idxMatch = RegExp(r'\.(-?\d+)$').firstMatch(branch);
-    if (idxMatch != null) {
-      sliceIndex = int.tryParse(idxMatch.group(1)!);
-      branch = branch.substring(0, idxMatch.start);
-    }
-
-    // 处理 Legado `class.xx` / `id.xx` / `tag.xx` 简写
-    branch = branch
-        .replaceAllMapped(RegExp(r'\bclass\.([a-zA-Z0-9_\-]+)'), (m) => '.${m.group(1)}')
-        .replaceAllMapped(RegExp(r'\bid\.([a-zA-Z0-9_\-]+)'), (m) => '#${m.group(1)}')
-        .replaceAllMapped(RegExp(r'\btag\.([a-zA-Z0-9_\-]+)'), (m) => '${m.group(1)}')
-        .replaceAll('@', ' ');
-
-    // 处理 `:contains(text)`
-    final containsMatch =
-        RegExp(r'^(.*?):contains\(([^)]+)\)(.*)$').firstMatch(branch);
-    List<dom.Element> candidates;
-    try {
-      if (containsMatch != null) {
-        final baseSel = containsMatch.group(1)!.trim();
-        final keyword = containsMatch.group(2)!.replaceAll('"', '').replaceAll("'", '').trim();
-        final tailSel = containsMatch.group(3)!.trim();
-        final matched = (baseSel.isEmpty ? [scope] : scope.querySelectorAll(baseSel))
-            .where((e) => e.text.contains(keyword))
-            .toList();
-        if (tailSel.isEmpty) {
-          candidates = matched;
-        } else {
-          candidates = [
-            for (final m in matched) ...m.querySelectorAll(tailSel),
-          ];
-        }
-      } else {
-        candidates = scope.querySelectorAll(branch);
-      }
-    } catch (_) {
-      return const [];
-    }
-
-    if (sliceIndex != null) {
-      if (candidates.isEmpty) return const [];
-      final resolved = sliceIndex < 0
-          ? candidates.length + sliceIndex
-          : sliceIndex;
-      if (resolved < 0 || resolved >= candidates.length) return const [];
-      return [candidates[resolved]];
-    }
-    return candidates;
-  }
-
-  List<String> _splitBranches(String input) {
-    final parts = <String>[];
-    final buf = StringBuffer();
-    var parenDepth = 0;
-    for (final rune in input.runes) {
-      final ch = String.fromCharCode(rune);
-      if (ch == '(' || ch == '[') parenDepth++;
-      if (ch == ')' || ch == ']') parenDepth = parenDepth > 0 ? parenDepth - 1 : 0;
-      if (ch == ',' && parenDepth == 0) {
-        if (buf.isNotEmpty) parts.add(buf.toString());
-        buf.clear();
-      } else {
-        buf.write(ch);
-      }
-    }
-    if (buf.isNotEmpty) parts.add(buf.toString());
-    return parts;
   }
 }
 

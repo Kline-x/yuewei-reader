@@ -7,14 +7,18 @@ import '../domain/book_match_models.dart';
 import '../domain/book_source_rule.dart';
 import 'book_metadata_sanitizer.dart';
 import 'rule_evaluator.dart';
+import 'source_crawler_helpers.dart';
 
-/// 并发抓书与聚合搜书引擎（全程透传 CancelToken、零假书源注入、安全过滤 SEO 广告简介）
+/// 并发抓书与聚合搜书引擎（全程透传 CancelToken、分页目录/正文、302 详情直跳）
 class SourceCrawlerService {
   SourceCrawlerService({
     required this.httpClient,
     this.evaluator = const RuleEvaluator(),
     this.pipeline = const ContentPipeline(),
   });
+
+  static const int _maxTocPages = 30;
+  static const int _maxChapterPages = 15;
 
   final AppHttpClient httpClient;
   final RuleEvaluator evaluator;
@@ -87,14 +91,27 @@ class SourceCrawlerService {
         cancelToken: token,
       );
 
+      final resolveBase =
+          res.finalUrl.isNotEmpty ? res.finalUrl : src.baseUrl;
       final nodes = evaluator.selectNodes(res.body, src.search.item);
+      if (nodes.isEmpty && res.finalUrl.isNotEmpty && res.finalUrl != url) {
+        final directHit = SourceCrawlerHelpers.extractDirectDetailHit(
+          evaluator: evaluator,
+          src: src,
+          html: res.body,
+          finalUrl: res.finalUrl,
+          latencyMs: res.latencyMs,
+        );
+        return directHit == null ? const [] : [directHit];
+      }
+
       final hits = <SourceSearchHit>[];
       for (final node in nodes) {
         final title = evaluator.evaluateField(node, src.search.title);
         final detailUrl = evaluator.evaluateField(
           node,
           src.search.detailUrl,
-          baseUrl: src.baseUrl,
+          baseUrl: resolveBase,
         );
         if (title.isEmpty || detailUrl.isEmpty) continue;
 
@@ -102,7 +119,7 @@ class SourceCrawlerService {
         final cover = evaluator.evaluateField(
           node,
           src.search.coverUrl,
-          baseUrl: src.baseUrl,
+          baseUrl: resolveBase,
         );
         final rawIntro = evaluator.evaluateField(node, src.search.intro);
         final latest =
@@ -128,7 +145,7 @@ class SourceCrawlerService {
     }
   }
 
-  /// 获取书籍详情与完整目录（自动以 OpenGraph 兜底、去重前置最新章节预览）
+  /// 获取书籍详情与完整目录（OpenGraph 兜底、支持目录分页最多 30 页与防环去重）
   Future<
           ({
             ParsedBookDetail detail,
@@ -152,157 +169,173 @@ class SourceCrawlerService {
     final rootNode =
         rootEl != null ? EvaluatedNode.html(rootEl) : EvaluatedNode.text('');
 
-    String evalOrOg(RuleField field, String ogName, {String urlBase = ''}) {
-      final v = evaluator.evaluateField(rootNode, field, baseUrl: urlBase);
-      if (v.isNotEmpty) return v;
-      return BookMetadataSanitizer.extractOgMeta(
-        evaluator,
-        rootNode,
-        ogName,
-        baseUrl: urlBase,
-      );
-    }
-
-    final title = evalOrOg(src.detail.title, 'og:title');
-    final author = evalOrOg(src.detail.author, 'og:novel:author');
-    final rawIntro = evalOrOg(src.detail.intro, 'og:description');
-    final cover = evalOrOg(
-      src.detail.coverUrl,
-      'og:image',
-      urlBase: res.finalUrl,
-    );
-    final status = sanitizeBadge(
-      evalOrOg(src.detail.statusText, 'og:novel:status'),
-    );
-    final category = sanitizeBadge(
-      evalOrOg(src.detail.category, 'og:novel:category'),
-    );
-    final rawLatest = evalOrOg(
-      src.detail.latestChapter,
-      'og:novel:latest_chapter_name',
-    );
-    final rawUpdateTime = evalOrOg(
-      src.detail.lastUpdateTime,
-      'og:novel:update_time',
+    final fields = SourceCrawlerHelpers.extractDetailFields(
+      evaluator: evaluator,
+      src: src,
+      rootNode: rootNode,
+      finalUrl: res.finalUrl,
     );
 
-    final rawTocUrl = src.detail.tocUrl.selector.trim().isEmpty
-        ? ''
-        : evaluator.evaluateField(
-            rootNode,
-            src.detail.tocUrl,
-            baseUrl: res.finalUrl,
-          );
-    final tocUrl = _isValidHttpUrl(rawTocUrl) ? rawTocUrl : '';
-
-    var tocHtml = res.body;
-    var tocBase = res.finalUrl;
-    if (tocUrl.isNotEmpty && tocUrl != res.finalUrl) {
+    var currentHtml = res.body;
+    var currentBase = res.finalUrl;
+    if (fields.tocUrl.isNotEmpty && fields.tocUrl != res.finalUrl) {
       final tocRes = await httpClient.fetchText(
-        tocUrl,
+        fields.tocUrl,
         referer: res.finalUrl,
         charsetHint: src.charset,
         cancelToken: cancelToken,
       );
-      tocHtml = tocRes.body;
-      tocBase = tocRes.finalUrl;
+      currentHtml = tocRes.body;
+      currentBase = tocRes.finalUrl;
     }
 
-    final tocNodes = evaluator.selectNodes(tocHtml, src.toc.item);
+    final firstTocBase = currentBase;
+    final visitedUrls = <String>{
+      if (fields.tocUrl.isNotEmpty) fields.tocUrl,
+      if (currentBase.isNotEmpty) currentBase,
+    };
     final rawChapters = <({String title, String url})>[];
-    for (final node in tocNodes) {
-      final chTitle = evaluator.evaluateField(node, src.toc.title);
-      final chUrl = evaluator.evaluateField(
-        node,
-        src.toc.url,
-        baseUrl: tocBase,
-      );
-      if (chTitle.isNotEmpty && chUrl.isNotEmpty) {
-        rawChapters.add((title: chTitle, url: chUrl));
+
+    for (var page = 0; page < _maxTocPages; page++) {
+      final tocNodes = evaluator.selectNodes(currentHtml, src.toc.item);
+      for (final node in tocNodes) {
+        final chTitle = evaluator.evaluateField(node, src.toc.title);
+        final chUrl = evaluator.evaluateField(
+          node,
+          src.toc.url,
+          baseUrl: currentBase,
+        );
+        if (chTitle.isNotEmpty && chUrl.isNotEmpty) {
+          rawChapters.add((title: chTitle, url: chUrl));
+        }
       }
+
+      if (src.toc.nextPageUrl.isEmpty) break;
+      final pageDoc = html_parser.parse(currentHtml);
+      final pageEl = pageDoc.documentElement;
+      if (pageEl == null) break;
+
+      final nextUrl = evaluator.evaluateField(
+        EvaluatedNode.html(pageEl),
+        src.toc.nextPageUrl,
+        baseUrl: currentBase,
+      );
+      if (!SourceCrawlerHelpers.isValidHttpUrl(nextUrl) ||
+          !visitedUrls.add(nextUrl)) {
+        break;
+      }
+
+      final HttpFetchResult nextRes;
+      try {
+        nextRes = await httpClient.fetchText(
+          nextUrl,
+          referer: currentBase,
+          charsetHint: src.charset,
+          cancelToken: cancelToken,
+        );
+      } on DioException catch (e) {
+        if (e.type == DioExceptionType.cancel) rethrow;
+        break;
+      } catch (_) {
+        break;
+      }
+      if (nextRes.finalUrl.isNotEmpty &&
+          nextRes.finalUrl != nextUrl &&
+          !visitedUrls.add(nextRes.finalUrl)) {
+        break;
+      }
+      currentHtml = nextRes.body;
+      currentBase = nextRes.finalUrl.isNotEmpty ? nextRes.finalUrl : nextUrl;
     }
 
-    final chapters = _sanitizeToc(rawChapters);
-    var cleanLatest = sanitizeLatestChapter(rawLatest);
+    final chapters = SourceCrawlerHelpers.sanitizeToc(rawChapters);
+    var cleanLatest = sanitizeLatestChapter(fields.rawLatest);
     if (cleanLatest.isEmpty && chapters.isNotEmpty) {
       cleanLatest = chapters.last.title;
     }
 
     return (
       detail: ParsedBookDetail(
-        title: title,
-        author: author,
-        intro: cleanSeoIntro(rawIntro),
-        coverUrl: cover,
-        tocUrl: tocBase,
-        statusText: status.isEmpty ? '连载中' : status,
-        category: category,
+        title: fields.title,
+        author: fields.author,
+        intro: cleanSeoIntro(fields.rawIntro),
+        coverUrl: fields.cover,
+        tocUrl: firstTocBase,
+        statusText: fields.status.isEmpty ? '连载中' : fields.status,
+        category: fields.category,
         latestChapter: cleanLatest,
-        lastUpdateTime: sanitizeUpdateTime(rawUpdateTime),
+        lastUpdateTime: sanitizeUpdateTime(fields.rawUpdateTime),
       ),
       chapters: chapters,
       latencyMs: res.latencyMs,
     );
   }
 
-  /// 抓取单章正文并通过 ContentPipeline 执行一次性清洗与分段
+  /// 抓取单章正文（支持章节内分页最多 15 页 + visitedUrls 防环，仅首页去重章名）
   Future<List<String>> fetchChapterParagraphs(
     BookSourceRule src,
     String chapterUrl, {
     String? chapterTitle,
     CancelToken? cancelToken,
   }) async {
-    final res = await httpClient.fetchText(
-      chapterUrl,
-      referer: src.baseUrl,
-      charsetHint: src.charset,
-      cancelToken: cancelToken,
-    );
-    final doc = html_parser.parse(res.body);
-    final rootEl = doc.documentElement;
-    final rootNode =
-        rootEl != null ? EvaluatedNode.html(rootEl) : EvaluatedNode.text('');
+    final visitedUrls = <String>{chapterUrl};
+    final allParagraphs = <String>[];
+    var currentUrl = chapterUrl;
+    var currentReferer = src.baseUrl;
 
-    final contentHtml = evaluator.evaluateField(rootNode, src.chapter.content);
-    if (contentHtml.trim().isEmpty) return const [];
-    return pipeline.processHtmlToParagraphs(
-      contentHtml,
-      chapterTitle: chapterTitle,
-    );
-  }
-
-  /// 剔除网页头部重复的“最新章节推荐”并保持正文顺序
-  static List<ParsedChapterEntry> _sanitizeToc(
-    List<({String title, String url})> raw,
-  ) {
-    if (raw.isEmpty) return const [];
-    final countByUrl = <String, int>{};
-    for (final item in raw) {
-      countByUrl[item.url] = (countByUrl[item.url] ?? 0) + 1;
-    }
-
-    final seen = <String>{};
-    final result = <ParsedChapterEntry>[];
-    for (var i = 0; i < raw.length; i++) {
-      final item = raw[i];
-      if (i < 16 && (countByUrl[item.url] ?? 0) > 1) {
-        countByUrl[item.url] = countByUrl[item.url]! - 1;
-        continue;
+    for (var page = 0; page < _maxChapterPages; page++) {
+      final HttpFetchResult res;
+      try {
+        res = await httpClient.fetchText(
+          currentUrl,
+          referer: currentReferer,
+          charsetHint: src.charset,
+          cancelToken: cancelToken,
+        );
+      } on DioException catch (e) {
+        if (page == 0 || e.type == DioExceptionType.cancel) rethrow;
+        break;
+      } catch (_) {
+        if (page == 0) rethrow;
+        break;
       }
-      if (!seen.add(item.url)) continue;
-      result.add(
-        ParsedChapterEntry(
-          index: result.length,
-          title: item.title,
-          url: item.url,
-        ),
-      );
-    }
-    return result;
-  }
 
-  static bool _isValidHttpUrl(String url) {
-    if (url.isEmpty || url.contains(RegExp(r'\s'))) return false;
-    return url.startsWith('http://') || url.startsWith('https://');
+      final pageBase = res.finalUrl.isNotEmpty ? res.finalUrl : currentUrl;
+      if (page == 0) {
+        visitedUrls.add(pageBase);
+      } else if (pageBase != currentUrl && !visitedUrls.add(pageBase)) {
+        break;
+      }
+
+      final doc = html_parser.parse(res.body);
+      final rootEl = doc.documentElement;
+      final rootNode =
+          rootEl != null ? EvaluatedNode.html(rootEl) : EvaluatedNode.text('');
+
+      final contentHtml = evaluator.evaluateField(rootNode, src.chapter.content);
+      if (contentHtml.trim().isNotEmpty) {
+        allParagraphs.addAll(
+          pipeline.processHtmlToParagraphs(
+            contentHtml,
+            chapterTitle: page == 0 ? chapterTitle : null,
+          ),
+        );
+      }
+
+      if (src.chapter.nextPageUrl.isEmpty) break;
+      final nextUrl = evaluator.evaluateField(
+        rootNode,
+        src.chapter.nextPageUrl,
+        baseUrl: pageBase,
+      );
+      if (!SourceCrawlerHelpers.isValidHttpUrl(nextUrl) ||
+          !visitedUrls.add(nextUrl)) {
+        break;
+      }
+      currentUrl = nextUrl;
+      currentReferer = pageBase;
+    }
+
+    return allParagraphs;
   }
 }

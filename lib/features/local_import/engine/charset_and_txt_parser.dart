@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:isolate';
 import 'dart:typed_data';
+import 'package:characters/characters.dart';
 import 'package:fast_gbk/fast_gbk.dart';
 import 'package:path/path.dart' as p;
 import '../../reader/engine/content_pipeline.dart';
@@ -290,6 +291,13 @@ class CharsetAndTxtParser {
         }
       }
       end = splitAt > start ? splitAt : end;
+      // 避开在 UTF-16 高代理码元处截断
+      if (end < text.length) {
+        final prevUnit = text.codeUnitAt(end - 1);
+        if (prevUnit >= 0xD800 && prevUnit <= 0xDBFF) {
+          end++;
+        }
+      }
       out.add(text.substring(start, end));
       start = end;
     }
@@ -301,7 +309,8 @@ class CharsetAndTxtParser {
         .replaceAll('\u3000', '')
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
-    if (clean.length <= 120) return clean;
-    return '${clean.substring(0, 120)}…';
+    final chars = clean.characters;
+    if (chars.length <= 120) return clean;
+    return '${chars.take(120)}…';
   }
 }

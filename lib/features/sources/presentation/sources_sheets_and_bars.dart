@@ -176,7 +176,7 @@ class _SourcesImportSheetState extends ConsumerState<SourcesImportSheet> {
   Widget build(BuildContext context) {
     final tokens = SoftTokens.of(context);
     const tabs = ['远程 URL 订阅', '粘贴 JSON', '本地 .json'];
-    return Padding(
+    return SingleChildScrollView(
       padding: const EdgeInsets.all(SoftSpacing.xl),
       child: Column(
         mainAxisSize: MainAxisSize.min,
