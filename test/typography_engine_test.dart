@@ -296,5 +296,42 @@ void main() {
       );
       rec.endRecording().dispose();
     });
+
+    test('fontFamily 透传、ReaderLayoutMode 解析与关闭首行缩进坐标一致性', () {
+      expect(ReaderLayoutMode.fromName('dual'), ReaderLayoutMode.dual);
+      expect(ReaderLayoutMode.fromName('bad'), ReaderLayoutMode.auto);
+
+      const base = TypographyConfig(viewportWidth: 360, viewportHeight: 680);
+      const custom = TypographyConfig(
+        viewportWidth: 360,
+        viewportHeight: 680,
+        fontFamily: 'YueweiFont_123',
+        indentFirstLine: false,
+      );
+      expect(base == custom, isFalse);
+      expect(base.hashCode == custom.hashCode, isFalse);
+      expect(TypographyEngine.bodyStyle(custom, Colors.black).fontFamily, 'YueweiFont_123');
+      expect(TypographyEngine.chapterHeadingStyle(custom, Colors.black).fontFamily, 'YueweiFont_123');
+
+      final rawParas = List<String>.unmodifiable(sampleParagraphs.take(6).toList());
+      final indentPages = engine.paginate(paragraphs: rawParas, chapterTitle: '缩进测试', config: base);
+      final noIndentPages = engine.paginate(paragraphs: rawParas, chapterTitle: '缩进测试', config: custom);
+
+      final noIndentLines = noIndentPages.expand((p) => p.lines).toList();
+      final p0Lines = noIndentLines.where((l) => l.paragraphIndex == 0).toList();
+      final p1Lines = noIndentLines.where((l) => l.paragraphIndex == 1).toList();
+      expect(p0Lines.first.text.startsWith('\u3000'), isFalse);
+      expect(p0Lines.first.charStart, 2);
+      expect(p1Lines.first.charStart, rawParas[0].length + 1 + 2);
+      for (final line in noIndentLines) {
+        expect(line.charEnd - line.charStart, line.text.length);
+      }
+
+      // 开关缩进互切重锚定均精确回落对应段落页码
+      final anchor = noIndentPages[noIndentPages.length ~/ 2].charStart;
+      final restored = engine.findPageByCharOffset(indentPages, anchor);
+      expect(anchor, greaterThanOrEqualTo(indentPages[restored].charStart));
+      expect(anchor, lessThanOrEqualTo(indentPages[restored].charEnd));
+    });
   });
 }

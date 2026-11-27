@@ -16,7 +16,9 @@ import 'package:yuewei_reader/features/local_import/engine/charset_and_txt_parse
 import 'package:yuewei_reader/features/local_import/engine/epub_archive_utils.dart';
 import 'package:yuewei_reader/features/local_import/engine/epub_book_parser.dart';
 import 'package:yuewei_reader/features/local_import/wifi/wifi_transfer_server.dart';
+import 'package:yuewei_reader/features/local_import/wifi/wifi_web_page_html.dart';
 import 'package:yuewei_reader/features/reader/engine/content_pipeline.dart';
+import 'package:yuewei_reader/features/reader/fonts/custom_font_manager.dart';
 import 'package:yuewei_reader/features/sources/data/source_repository.dart';
 
 void main() {
@@ -240,6 +242,62 @@ void main() {
       } finally {
         await server.dispose();
         await blocker.close();
+      }
+    }, _DirectHttpOverrides());
+  });
+
+  test('WifiTransferServer 支持带 token 上传 .ttf/.otf 字体并拒绝非法文件头', () async {
+    expect(kWifiTransferHtml, contains('.ttf,.otf'));
+    final fontService = CustomFontService(
+      db: db,
+      rootDirProvider: () async => tempDir,
+      fontLoader: (_, _) async {},
+    );
+    await HttpOverrides.runWithHttpOverrides(() async {
+      final server = WifiTransferServer(
+        localImportService: importService,
+        sourceRepository: sourceRepo,
+        preferredPort: 0,
+        customFontImporter: (fileName, bytes) async {
+          final res = await fontService.importFontBytes(fileName: fileName, bytes: bytes);
+          return WifiImportedFont(id: res.entry.id, displayName: res.entry.displayName, fontFamily: res.entry.fontFamily, fileSizeBytes: res.entry.fileSizeBytes);
+        },
+      );
+      try {
+        await server.start();
+        final token = server.accessToken!;
+        final client = HttpClient();
+        final base = 'http://127.0.0.1:${server.port}';
+        final events = <WifiReceivedItem>[];
+        final sub = server.receivedStream.listen(events.add);
+
+        final unauth = await client.postUrl(Uri.parse('$base/api/upload?name=WenKai.ttf'));
+        unauth.add([0x00, 0x01, 0x00, 0x00, 0x01]);
+        final unauthResp = await unauth.close();
+        expect(unauthResp.statusCode, HttpStatus.unauthorized);
+        await unauthResp.drain<void>();
+
+        final okReq = await client.postUrl(Uri.parse('$base/api/upload?name=WenKai.ttf&token=$token'));
+        okReq.add([0x00, 0x01, 0x00, 0x00, 0x01, 0x02, 0x03]);
+        final okResp = await okReq.close();
+        expect(okResp.statusCode, HttpStatus.ok);
+        final okJson = jsonDecode(await utf8.decodeStream(okResp)) as Map<String, dynamic>;
+        expect(okJson['kind'], 'font');
+        expect(okJson['message'], contains('收到字体'));
+
+        final badReq = await client.postUrl(Uri.parse('$base/api/upload?name=Bad.otf&token=$token'));
+        badReq.add([0x42, 0x41, 0x44, 0x21]);
+        final badResp = await badReq.close();
+        expect(badResp.statusCode, HttpStatus.badRequest);
+        await badResp.drain<void>();
+
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        expect(events.single.kind, 'font');
+        expect(CustomFontEntry.decodeList(await db.getPreference(CustomFontService.prefsKey)).length, 1);
+        await sub.cancel();
+        client.close(force: true);
+      } finally {
+        await server.dispose();
       }
     }, _DirectHttpOverrides());
   });

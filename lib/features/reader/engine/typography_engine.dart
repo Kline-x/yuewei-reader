@@ -52,6 +52,7 @@ class TypographyEngine {
   /// 供引擎与画笔完全一致使用的正文样式
   static TextStyle bodyStyle(TypographyConfig config, Color color) {
     return TextStyle(
+      fontFamily: config.fontFamily,
       fontSize: config.fontSize,
       height: config.lineHeightRatio,
       letterSpacing: config.letterSpacing,
@@ -63,6 +64,7 @@ class TypographyEngine {
   /// 供引擎与画笔完全一致使用的章标题样式
   static TextStyle chapterHeadingStyle(TypographyConfig config, Color color) {
     return TextStyle(
+      fontFamily: config.fontFamily,
       fontSize: config.fontSize * 1.32,
       height: 1.32,
       fontWeight: FontWeight.w800,
@@ -202,6 +204,13 @@ class TypographyEngine {
       final paraLines = <TypedLine>[];
       var startCluster = 0;
       var startCharOffset = globalOffset;
+      if (!config.indentFirstLine) {
+        while (startCluster < clusters.length &&
+            clusters[startCluster] == '\u3000') {
+          startCharOffset += clusters[startCluster].length;
+          startCluster++;
+        }
+      }
 
       while (startCluster < clusters.length) {
         var lineWidth = 0.0;

@@ -8,6 +8,7 @@ import 'app/providers.dart';
 import 'app/router.dart';
 import 'core/platform/host_bridge.dart';
 import 'design_system/tokens/soft_tokens.dart';
+import 'features/reader/fonts/custom_font_manager.dart';
 import 'features/update/app_update_dialog.dart';
 import 'features/update/app_update_service.dart';
 
@@ -54,11 +55,22 @@ class _YueweiAppState extends ConsumerState<YueweiApp> {
     );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      unawaited(_preloadCustomFonts());
       _autoUpdateTimer = Timer(
         const Duration(seconds: 2),
         () => unawaited(_runSilentAutoUpdateCheck()),
       );
     });
+  }
+
+  Future<void> _preloadCustomFonts() async {
+    try {
+      await ref
+          .read(customFontManagerProvider.notifier)
+          .loadAllRegisteredFonts();
+    } catch (error) {
+      debugPrint('自定义字体预加载异常: $error');
+    }
   }
 
   Future<void> _runSilentAutoUpdateCheck() async {
