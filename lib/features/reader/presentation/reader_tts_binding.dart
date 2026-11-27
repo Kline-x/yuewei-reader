@@ -14,9 +14,11 @@ class ReaderTtsBinding {
     required TtsController tts,
     required ReaderSessionController session,
     TtsLocateCallback? onLocate,
+    bool deferStateNotify = false,
   }) {
     tts.bindReader(
       owner: owner,
+      deferStateNotify: deferStateNotify,
       onLocate: onLocate ??
           (chIdx, offset) =>
               session.jumpToLocation(chIdx, offset, animateScroll: true),
@@ -79,8 +81,12 @@ class ReaderTtsBinding {
       charAnchorOffset: session.charAnchorOffset,
       isScrollMode: isScrollMode,
     );
+    final book = session.book;
     final ok = await ttsNotifier.startReading(
       bookId: session.bookId,
+      bookTitle: book?.title ?? '',
+      author: book?.author ?? '',
+      coverUrl: book?.coverUrl ?? '',
       chapterIndex: session.chapterIndex,
       chapterTitle: session.currentChapterTitle,
       paragraphs: session.paragraphs,

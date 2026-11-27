@@ -32,6 +32,10 @@ class TtsState {
   const TtsState({
     this.status = TtsPlaybackStatus.idle,
     this.bookId,
+    this.bookTitle = '',
+    this.author = '',
+    this.coverUrl = '',
+    this.isReaderAttached = false,
     this.chapterIndex = 0,
     this.chapterTitle = '',
     this.totalChapters = 0,
@@ -45,6 +49,8 @@ class TtsState {
 
   final TtsPlaybackStatus status;
   final String? bookId;
+  final String bookTitle, author, coverUrl;
+  final bool isReaderAttached;
   final int chapterIndex, totalChapters, paragraphIndex;
   final String chapterTitle;
   final List<String> paragraphs;
@@ -72,6 +78,10 @@ class TtsState {
   TtsState copyWith({
     TtsPlaybackStatus? status,
     String? bookId,
+    String? bookTitle,
+    String? author,
+    String? coverUrl,
+    bool? isReaderAttached,
     int? chapterIndex,
     String? chapterTitle,
     int? totalChapters,
@@ -87,6 +97,10 @@ class TtsState {
       TtsState(
         status: status ?? this.status,
         bookId: bookId ?? this.bookId,
+        bookTitle: bookTitle ?? this.bookTitle,
+        author: author ?? this.author,
+        coverUrl: coverUrl ?? this.coverUrl,
+        isReaderAttached: isReaderAttached ?? this.isReaderAttached,
         chapterIndex: chapterIndex ?? this.chapterIndex,
         chapterTitle: chapterTitle ?? this.chapterTitle,
         totalChapters: totalChapters ?? this.totalChapters,

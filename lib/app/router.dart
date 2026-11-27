@@ -14,6 +14,7 @@ import '../features/shelf/presentation/shelf_page.dart';
 import '../features/sources/domain/book_match_models.dart';
 import '../features/sources/presentation/sources_page.dart';
 import '../features/sync/presentation/sync_and_backup_page.dart';
+import '../features/tts/global_tts_mini_capsule.dart';
 import 'providers.dart';
 
 final GlobalKey<NavigatorState> _rootNavigatorKey = GlobalKey<NavigatorState>();
@@ -186,10 +187,16 @@ class _RootShellState extends ConsumerState<RootShell> {
                     child: AnimatedOpacity(
                       opacity: keyboardVisible ? 0.0 : 1.0,
                       duration: const Duration(milliseconds: 160),
-                      child: SublimeFloatingDock(
-                        items: _dockItems,
-                        currentIndex: widget.navigationShell.currentIndex,
-                        onTap: _onTabTap,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const GlobalTtsMiniCapsule(),
+                          SublimeFloatingDock(
+                            items: _dockItems,
+                            currentIndex: widget.navigationShell.currentIndex,
+                            onTap: _onTabTap,
+                          ),
+                        ],
                       ),
                     ),
                   ),

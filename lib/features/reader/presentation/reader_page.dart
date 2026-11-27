@@ -37,6 +37,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
   late final ReaderSessionController _session;
   late final TtsController _ttsNotifier;
   late final Stream<List<Bookmark>> _bookmarksStream;
+  late final ProviderSubscription<TtsState> _ttsSub;
   StreamSubscription<VolumeKeyEvent>? _volumeSub;
 
   bool _menuVisible = false, _sheetOpen = false;
@@ -51,20 +52,67 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
     _ttsNotifier = ref.read(ttsControllerProvider.notifier);
     final db = ref.read(appDatabaseProvider);
     _bookmarksStream = db.watchBookmarksByBook(widget.bookId);
-    _session = ReaderSessionController(bookId: widget.bookId, ref: ref, db: db)
-      ..bootstrap(widget.initialChapterIndex);
+    _session = ReaderSessionController(bookId: widget.bookId, ref: ref, db: db);
+    _ttsSub = ref.listenManual<TtsState>(ttsControllerProvider, (_, next) {
+      if (!mounted) return;
+      if (next.isActive &&
+          next.bookId == widget.bookId &&
+          !next.isReaderAttached) {
+        ReaderTtsBinding.attach(
+          owner: this,
+          tts: _ttsNotifier,
+          session: _session,
+          onLocate: (chIdx, offset) =>
+              _locateReader(chIdx, offset, animate: true),
+        );
+      }
+    });
+    final initialTts = ref.read(ttsControllerProvider);
+    if (!initialTts.isActive || initialTts.bookId == widget.bookId) {
+      ReaderTtsBinding.attach(
+        owner: this,
+        tts: _ttsNotifier,
+        session: _session,
+        onLocate: (chIdx, offset) => _locateReader(chIdx, offset, animate: true),
+        deferStateNotify: true,
+      );
+    }
+    unawaited(_bootstrapAndSyncTts());
+  }
+
+  Future<void> _bootstrapAndSyncTts() async {
+    await _session.bootstrap(widget.initialChapterIndex);
+    if (!mounted) return;
+    final tts = ref.read(ttsControllerProvider);
+    if (!tts.isActive || tts.bookId != widget.bookId) return;
     ReaderTtsBinding.attach(
       owner: this,
       tts: _ttsNotifier,
       session: _session,
       onLocate: (chIdx, offset) => _locateReader(chIdx, offset, animate: true),
     );
+    final shouldFollowActiveTts = widget.initialChapterIndex == null ||
+        widget.initialChapterIndex == tts.chapterIndex;
+    if (shouldFollowActiveTts &&
+        _session.chapters.isNotEmpty &&
+        tts.paragraphs.isNotEmpty) {
+      final targetOffset = TtsController.charOffsetOfParagraph(
+        tts.paragraphs,
+        tts.paragraphIndex,
+      );
+      if (_session.chapterIndex != tts.chapterIndex ||
+          _session.charAnchorOffset != targetOffset) {
+        await _locateReader(tts.chapterIndex, targetOffset, animate: false);
+      }
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _ttsNotifier.unbindAndStopOnDispose(this);
+    _ttsSub.close();
+    // 退出阅读器仅脱离回调，若当前处于活跃听书态绝不调用 ttsStop，实现后台无缝续播
+    _ttsNotifier.detachReader(this, deferStateNotify: true);
     _volumeSub?.cancel();
     HostBridge.instance.setVolumeKeyIntercept(false);
     HostBridge.instance.keepScreenOn(false);
