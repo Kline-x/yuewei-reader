@@ -10,32 +10,19 @@ import 'package:yuewei_reader/features/reader/engine/reader_scroll_layout.dart';
 import 'package:yuewei_reader/features/reader/engine/reader_slide_window.dart';
 import 'package:yuewei_reader/features/reader/engine/reader_turn_gesture_math.dart';
 import 'package:yuewei_reader/features/reader/engine/typography_engine.dart';
+import 'package:yuewei_reader/features/reader/presentation/page_picture_cache.dart';
 import 'package:yuewei_reader/features/reader/presentation/reader_continuous_scroll_view.dart';
+import 'package:yuewei_reader/features/reader/presentation/reader_pager_painter_factory.dart';
 import 'package:yuewei_reader/features/reader/presentation/reader_pager_views.dart';
+import 'package:yuewei_reader/features/reader/presentation/slide_cover_painter.dart';
 
-PageRenderItem _slot(int ch, int pg, String text, {int charStart = 0, int charEnd = 20}) {
-  return PageRenderItem(
-    chapterIndex: ch,
-    chapterTitle: '第${ch + 1}章',
-    totalPagesInChapter: 2,
-    bookTitle: '测试书籍',
-    page: TypedPage(
-      pageIndex: pg,
-      charStart: charStart,
-      charEnd: charEnd,
-      lines: [
-        TypedLine(
-          text: text,
-          paragraphIndex: 0,
-          charStart: charStart,
-          charEnd: charEnd,
-          isFirstLineOfPara: true,
-          isLastLineOfPara: true,
-        ),
-      ],
-    ),
-  );
-}
+PageRenderItem _slot(int ch, int pg, String text, {int charStart = 0, int charEnd = 20}) => PageRenderItem(
+      chapterIndex: ch, chapterTitle: '第${ch + 1}章', totalPagesInChapter: 2, bookTitle: '测试书籍',
+      page: TypedPage(
+        pageIndex: pg, charStart: charStart, charEnd: charEnd,
+        lines: [TypedLine(text: text, paragraphIndex: 0, charStart: charStart, charEnd: charEnd, isFirstLineOfPara: true, isLastLineOfPara: true)],
+      ),
+    );
 
 void main() {
   group('QQ阅读级五模式与 3D 贝塞尔仿真卷页几何单测', () {
@@ -171,39 +158,49 @@ void main() {
     });
   });
 
+Widget pagerHarness({
+  Key? key,
+  required double width,
+  required double height,
+  required PageTurnMode turnMode,
+  required PageRenderItem currentItem,
+  PageRenderItem? prevItem,
+  PageRenderItem? nextItem,
+  required TypographyConfig config,
+  bool hasPrev = false,
+  bool hasNext = false,
+  VoidCallback? onNext,
+  VoidCallback? onPrev,
+  VoidCallback? onMenu,
+}) =>
+    MaterialApp(
+      home: Scaffold(
+        body: SizedBox(
+          width: width,
+          height: height,
+          child: ReaderPagerViews(
+            key: key, turnMode: turnMode, bookTitle: '手势测试', initialCharOffset: 0,
+            currentItem: currentItem, prevItem: prevItem, nextItem: nextItem,
+            scrollBlocks: const [], config: config, theme: ReaderPaperTheme.porcelainWhite,
+            hasPrevChapter: hasPrev, hasNextChapter: hasNext,
+            onCommitNext: onNext ?? () {}, onCommitPrev: onPrev ?? () {},
+            onTapCenterMenu: onMenu ?? () {}, onNeedAppendNextChapter: () {},
+            onRequestPrevChapter: () {}, onScrollChapterProgress: (_, _) {},
+          ),
+        ),
+      ),
+    );
+
   group('翻页交互手势与连续滚动状态安全回归单测', () {
     testWidgets('未预取邻居章拖拽跨章、反向回拖不翻页、快速连点不捕获过期槽位多提交', (tester) async {
       const cfg = TypographyConfig(fontSize: 18.0, viewportWidth: 400.0, viewportHeight: 700.0);
       final pagerKey = GlobalKey<ReaderPagerViewsState>();
       var nextCommits = 0, prevCommits = 0;
 
-      await tester.pumpWidget(MaterialApp(
-        home: Scaffold(
-          body: SizedBox(
-            width: 400,
-            height: 700,
-            child: ReaderPagerViews(
-              key: pagerKey,
-              turnMode: PageTurnMode.slide,
-              bookTitle: '手势测试',
-              initialCharOffset: 0,
-              currentItem: _slot(1, 0, '当前页内容'),
-              prevItem: null,
-              nextItem: null,
-              scrollBlocks: const [],
-              config: cfg,
-              theme: ReaderPaperTheme.porcelainWhite,
-              hasPrevChapter: true,
-              hasNextChapter: true,
-              onCommitNext: () => nextCommits++,
-              onCommitPrev: () => prevCommits++,
-              onTapCenterMenu: () {},
-              onNeedAppendNextChapter: () {},
-              onRequestPrevChapter: () {},
-              onScrollChapterProgress: (_, _) {},
-            ),
-          ),
-        ),
+      await tester.pumpWidget(pagerHarness(
+        key: pagerKey, width: 400, height: 700, turnMode: PageTurnMode.slide,
+        currentItem: _slot(1, 0, '当前页内容'), config: cfg, hasPrev: true, hasNext: true,
+        onNext: () => nextCommits++, onPrev: () => prevCommits++,
       ));
 
       // 1. nextItem == null 且 hasNextChapter == true 时左拖达阈值直接提交跨章
@@ -227,33 +224,10 @@ void main() {
       expect(nextCommits, 1);
 
       // 4. 动画期间同步连点两次 turnNextAnimated，第二次仅结算当前动画不以过期槽位多提交
-      await tester.pumpWidget(MaterialApp(
-        home: Scaffold(
-          body: SizedBox(
-            width: 400,
-            height: 700,
-            child: ReaderPagerViews(
-              key: pagerKey,
-              turnMode: PageTurnMode.slide,
-              bookTitle: '手势测试',
-              initialCharOffset: 0,
-              currentItem: _slot(1, 0, '第一页'),
-              prevItem: null,
-              nextItem: _slot(1, 1, '第二页'),
-              scrollBlocks: const [],
-              config: cfg,
-              theme: ReaderPaperTheme.porcelainWhite,
-              hasPrevChapter: false,
-              hasNextChapter: false,
-              onCommitNext: () => nextCommits++,
-              onCommitPrev: () => prevCommits++,
-              onTapCenterMenu: () {},
-              onNeedAppendNextChapter: () {},
-              onRequestPrevChapter: () {},
-              onScrollChapterProgress: (_, _) {},
-            ),
-          ),
-        ),
+      await tester.pumpWidget(pagerHarness(
+        key: pagerKey, width: 400, height: 700, turnMode: PageTurnMode.slide,
+        currentItem: _slot(1, 0, '第一页'), nextItem: _slot(1, 1, '第二页'),
+        config: cfg, onNext: () => nextCommits++, onPrev: () => prevCommits++,
       ));
       pagerKey.currentState!.turnNextAnimated();
       await tester.pump(const Duration(milliseconds: 40));
@@ -316,14 +290,42 @@ void main() {
 
       // 3. 调大字号触发 configChanged：重锚定过程被抑制上报保护，不产生漂移回写
       final countBeforeResize = reports.length;
-      await tester.pumpWidget(buildView(
-        blocks: [ch0, ch1],
-        initialOffset: 0,
-        cmd: const ScrollJumpCommand(token: 2, chapterIndex: 0, landOnEnd: true),
-        fontSize: 24.0,
-      ));
+      await tester.pumpWidget(buildView(blocks: [ch0, ch1], initialOffset: 0, cmd: const ScrollJumpCommand(token: 2, chapterIndex: 0, landOnEnd: true), fontSize: 24.0));
       await tester.pumpAndSettle();
       expect(reports.length, countBeforeResize);
+    });
+
+    testWidgets('双页模式 curl 自动平滑降级 cover 且点击区按总视口宽判定', (tester) async {
+      const cfg = TypographyConfig(fontSize: 18.0, viewportWidth: 386.0, viewportHeight: 600.0);
+      final dualCur = PageRenderItem(
+        chapterIndex: 0, chapterTitle: '第1章', page: _slot(0, 0, '左').page, rightPage: _slot(0, 1, '右').page,
+        totalPagesInChapter: 4, bookTitle: '双页', isDualPage: true, spineWidth: 28.0,
+      );
+      final dualNext = PageRenderItem(
+        chapterIndex: 0, chapterTitle: '第1章', page: _slot(0, 2, '下左').page, rightPage: _slot(0, 3, '下右').page,
+        totalPagesInChapter: 4, bookTitle: '双页', isDualPage: true, spineWidth: 28.0,
+      );
+      final picCache = PagePictureCache();
+      addTearDown(picCache.clear);
+      final painter = ReaderPagerPainterFactory.build(
+        turnMode: PageTurnMode.curl, picCache: picCache, currentItem: dualCur, prevItem: null, nextItem: dualNext,
+        config: cfg, theme: ReaderPaperTheme.porcelainWhite, size: const Size(800, 600),
+        activeDirection: 1, linearProgress: 0.4, curlTouch: Offset.zero, curlCorner: Offset.zero,
+      );
+      expect((painter as SlideCoverPainter).turnMode, PageTurnMode.cover);
+
+      var menuTapped = 0, nextTapped = 0;
+      await tester.pumpWidget(pagerHarness(
+        width: 800, height: 600, turnMode: PageTurnMode.curl,
+        currentItem: dualCur, nextItem: dualNext, config: cfg,
+        onNext: () => nextTapped++, onMenu: () => menuTapped++,
+      ));
+      await tester.tapAt(const Offset(400, 300));
+      await tester.pump();
+      expect((menuTapped, nextTapped), (1, 0));
+      await tester.tapAt(const Offset(720, 300));
+      await tester.pumpAndSettle();
+      expect(nextTapped, 1);
     });
   });
 }

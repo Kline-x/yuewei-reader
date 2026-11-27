@@ -13,28 +13,70 @@ extension _ReaderPageBodyBuilder on _ReaderPageState {
     required List<Bookmark> bookmarks,
   }) {
     final media = MediaQuery.paddingOf(context);
+    final displayFeatures = MediaQuery.displayFeaturesOf(context);
+    final geometry = DualPageComposer.resolveDualPageGeometry(
+      constraints: constraints,
+      layoutMode: settings.layoutMode,
+      turnMode: settings.turnMode,
+      displayFeatures: displayFeatures,
+    );
     final topSafe = media.top > 0 ? media.top : 24.0;
     final botSafe = media.bottom > 0 ? media.bottom : 16.0;
     final config = TypographyConfig(
       fontSize: settings.fontSize,
       lineHeightRatio: settings.spacingPreset.ratio,
-      viewportWidth: constraints.maxWidth,
+      paragraphGap: settings.paragraphGap,
+      letterSpacing: settings.letterSpacing,
+      viewportWidth: geometry.columnWidth,
       viewportHeight: constraints.maxHeight,
+      horizontalPadding: settings.horizontalPadding,
       topPadding: topSafe + 34.0,
       bottomPadding: botSafe + (ttsForBook ? 72.0 : 28.0),
+      fontFamily: settings.fontFamily,
+      indentFirstLine: settings.indentFirstLine,
     );
-    _session.syncForBuild(config, settings.turnMode);
-    final slots = _session.buildSlots();
+    _session.syncForBuild(
+      config,
+      settings.turnMode,
+      isDualPage: geometry.isDualPage,
+      spineWidth: geometry.spineWidth,
+    );
+    final slots = _session.buildSlots(
+      isDualPage: geometry.isDualPage,
+      spineWidth: geometry.spineWidth,
+    );
     final isLocalBook = _session.book?.sourceId == kLocalBookSourceId;
     final isScrollMode = settings.turnMode == PageTurnMode.scroll;
-    final isBookmarked = ReaderBookmarkHelper.findMatchingBookmark(
+    final currentSlot = slots.current;
+    var isBookmarked = ReaderBookmarkHelper.findMatchingBookmark(
           bookmarks: bookmarks,
           chapterIndex: _session.chapterIndex,
-          currentItem: slots.current,
+          currentItem: currentSlot,
           charAnchorOffset: _session.charAnchorOffset,
           isScrollMode: isScrollMode,
         ) !=
         null;
+    if (!isBookmarked &&
+        !isScrollMode &&
+        currentSlot != null &&
+        currentSlot.rightPage != null) {
+      isBookmarked = ReaderBookmarkHelper.findMatchingBookmark(
+            bookmarks: bookmarks,
+            chapterIndex: currentSlot.chapterIndex,
+            currentItem: DualPageComposer.buildSlotItem(
+              chapterIndex: currentSlot.chapterIndex,
+              chapterTitle: currentSlot.chapterTitle,
+              pages: [currentSlot.rightPage!],
+              startIndex: 0,
+              bookTitle: currentSlot.bookTitle,
+              isDualPage: false,
+              spineWidth: 0.0,
+            ),
+            charAnchorOffset: _session.charAnchorOffset,
+            isScrollMode: false,
+          ) !=
+          null;
+    }
 
     return ReaderBodyView(
       pagerKey: _pagerKey,
@@ -48,7 +90,7 @@ extension _ReaderPageBodyBuilder on _ReaderPageState {
       config: config,
       topSafe: topSafe,
       botSafe: botSafe,
-      currentItem: slots.current,
+      currentItem: currentSlot,
       prevItem: slots.prev,
       nextItem: slots.next,
       scrollBlocks: _session.scrollBlocks,

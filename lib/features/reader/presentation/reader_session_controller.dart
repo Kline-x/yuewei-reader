@@ -2,11 +2,14 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/database/app_database.dart';
+import '../engine/dual_page_composer.dart';
 import '../engine/page_models.dart';
 import '../engine/reader_chapter_loader.dart';
 import '../engine/reader_page_slot.dart';
 import '../engine/reader_slide_window.dart';
 import 'reader_session_bootstrap.dart';
+
+export '../engine/dual_page_composer.dart';
 
 part 'reader_session_scroll_ops.dart';
 
@@ -45,6 +48,8 @@ class ReaderSessionController extends ChangeNotifier {
   int _loadEpoch = 0;
   bool loading = true;
   String? errorMsg;
+  bool isDualPage = false;
+  double spineWidth = 0.0;
   bool _jumpToLastPageOnLoad = false;
   bool _appendingScrollNext = false;
   bool _disposed = false;
@@ -198,37 +203,21 @@ class ReaderSessionController extends ChangeNotifier {
     final targetIdx = targetChapterIndex.clamp(0, chapters.length - 1);
     final safeOffset = targetCharOffset < 0 ? 0 : targetCharOffset;
     jumpSequence++;
-    if (targetIdx == chapterIndex &&
-        !loading &&
-        errorMsg == null &&
-        paragraphs.isNotEmpty) {
+    if (targetIdx == chapterIndex && !loading && errorMsg == null && paragraphs.isNotEmpty) {
       charAnchorOffset = safeOffset;
       final cfg = window.lastConfig;
       if (cfg != null) {
         final pages = window.ensurePaginated(
-          chapterIndex: targetIdx,
-          chapterTitle: currentChapterTitle,
-          paragraphs: paragraphs,
-          config: cfg,
+          chapterIndex: targetIdx, chapterTitle: currentChapterTitle, paragraphs: paragraphs, config: cfg,
         );
-        pageIndex = window.findPageByCharOffset(pages, safeOffset);
-      }
-      if (!scrollBlocks.any((b) => b.chapterIndex == targetIdx)) {
-        scrollBlocks = window.buildInitialScrollBlocks(
-          chapterIndex: targetIdx,
-          chapterTitle: currentChapterTitle,
-          paragraphs: paragraphs,
-          bookId: bookId,
-          chapters: chapters,
-          loader: loader,
+        pageIndex = DualPageComposer.normalizeLeftPageIndex(
+          window.findPageByCharOffset(pages, safeOffset), pages.length, isDualPage: isDualPage,
         );
       }
+      _ensureScrollBlocksAligned(targetIdx);
       if (emitScrollCommand) {
         scrollJumpCommand = ScrollJumpCommand(
-          token: ++_scrollJumpToken,
-          chapterIndex: targetIdx,
-          charOffset: safeOffset,
-          animate: animateScroll,
+          token: ++_scrollJumpToken, chapterIndex: targetIdx, charOffset: safeOffset, animate: animateScroll,
         );
       }
       _emit();
@@ -238,67 +227,61 @@ class ReaderSessionController extends ChangeNotifier {
     await loadChapter(targetIdx, charOffset: safeOffset);
   }
 
-  void syncForBuild(TypographyConfig config, PageTurnMode turnMode) {
-    if (loading || errorMsg != null || paragraphs.isEmpty) return;
-    final cfgChanged = window.syncWindow(
-      config: config,
-      activeChapterIndex: chapterIndex,
-      bookId: bookId,
-      chapters: chapters,
-      loader: loader,
-    );
-    final curPages = window.ensurePaginated(
-      chapterIndex: chapterIndex,
-      chapterTitle: currentChapterTitle,
-      paragraphs: paragraphs,
-      config: config,
-    );
-    if (cfgChanged || _jumpToLastPageOnLoad) {
-      pageIndex = _jumpToLastPageOnLoad
-          ? (curPages.length - 1).clamp(0, curPages.length - 1)
-          : window.findPageByCharOffset(curPages, charAnchorOffset);
-      if (_jumpToLastPageOnLoad && curPages.isNotEmpty) {
-        charAnchorOffset = curPages[pageIndex].charStart;
-      }
-      _jumpToLastPageOnLoad = false;
-    }
-    if (turnMode != PageTurnMode.scroll &&
-        (scrollBlocks.isEmpty ||
-            scrollBlocks.first.chapterIndex != chapterIndex)) {
+  void _ensureScrollBlocksAligned(int targetIdx) {
+    if (scrollBlocks.isEmpty || !scrollBlocks.any((b) => b.chapterIndex == targetIdx)) {
       scrollBlocks = window.buildInitialScrollBlocks(
-        chapterIndex: chapterIndex,
-        chapterTitle: currentChapterTitle,
-        paragraphs: paragraphs,
-        bookId: bookId,
-        chapters: chapters,
-        loader: loader,
+        chapterIndex: targetIdx, chapterTitle: currentChapterTitle, paragraphs: paragraphs,
+        bookId: bookId, chapters: chapters, loader: loader,
       );
     }
   }
 
-  ({PageRenderItem? prev, PageRenderItem? current, PageRenderItem? next})
-      buildSlots() => window.buildSlots(
-            chapterIndex: chapterIndex,
-            pageIndex: pageIndex,
-            bookTitle: book?.title ?? '',
-            chapters: chapters,
-          );
-
-  void commitNext() {
-    final cur = window.pagesOf(chapterIndex) ?? const [];
-    if (pageIndex + 1 < cur.length) {
-      _applyPageIndex(pageIndex + 1, cur);
-    } else if (chapterIndex + 1 < chapters.length) {
-      loadChapter(chapterIndex + 1);
+  void syncForBuild(TypographyConfig config, PageTurnMode turnMode, {bool isDualPage = false, double spineWidth = 0.0}) {
+    if (loading || errorMsg != null || paragraphs.isEmpty) return;
+    this.isDualPage = isDualPage;
+    this.spineWidth = spineWidth;
+    final cfgChanged = window.syncWindow(
+      config: config, activeChapterIndex: chapterIndex, bookId: bookId,
+      chapters: chapters, loader: loader, isDualPage: isDualPage,
+    );
+    final curPages = window.ensurePaginated(
+      chapterIndex: chapterIndex, chapterTitle: currentChapterTitle, paragraphs: paragraphs, config: config,
+    );
+    pageIndex = window.resolveSyncedPageIndex(
+      curPages, currentPageIndex: pageIndex, charAnchorOffset: charAnchorOffset,
+      needReanchor: cfgChanged, landOnLastPage: _jumpToLastPageOnLoad, isDualPage: isDualPage,
+    );
+    if (_jumpToLastPageOnLoad && curPages.isNotEmpty) charAnchorOffset = curPages[pageIndex].charStart;
+    _jumpToLastPageOnLoad = false;
+    if (turnMode != PageTurnMode.scroll && (scrollBlocks.isEmpty || scrollBlocks.first.chapterIndex != chapterIndex)) {
+      _ensureScrollBlocksAligned(chapterIndex);
     }
   }
 
+  ({PageRenderItem? prev, PageRenderItem? current, PageRenderItem? next})
+      buildSlots({bool? isDualPage, double? spineWidth}) => window.buildSlots(
+            chapterIndex: chapterIndex, pageIndex: pageIndex, bookTitle: book?.title ?? '',
+            chapters: chapters, isDualPage: isDualPage ?? this.isDualPage, spineWidth: spineWidth ?? this.spineWidth,
+          );
+
+  void commitNext() {
+    final next = window.turnNext(
+      chapterIndex: chapterIndex, pageIndex: pageIndex, totalChapters: chapters.length, isDualPage: isDualPage,
+    );
+    if (next != null) _commitTurnStep(next.chapterIndex, next.pageIndex, next.crossedChapter, false);
+  }
+
   void commitPrev() {
-    final cur = window.pagesOf(chapterIndex) ?? const [];
-    if (pageIndex > 0) {
-      _applyPageIndex(pageIndex - 1, cur);
-    } else if (chapterIndex > 0) {
-      loadChapter(chapterIndex - 1, landOnLastPage: true);
+    final prev = window.turnPrev(chapterIndex: chapterIndex, pageIndex: pageIndex, isDualPage: isDualPage);
+    if (prev != null) _commitTurnStep(prev.chapterIndex, prev.pageIndex, prev.crossedChapter, prev.landOnLastPage);
+  }
+
+  void _commitTurnStep(int targetCh, int targetPg, bool crossed, bool landLast) {
+    if (crossed) {
+      loadChapter(targetCh, landOnLastPage: landLast);
+    } else {
+      final cur = window.pagesOf(chapterIndex) ?? const [];
+      if (cur.isNotEmpty) _applyPageIndex(targetPg, cur);
     }
   }
 

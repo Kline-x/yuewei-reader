@@ -1,7 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'page_models.dart';
 
-/// 供跨章翻页手势与矢量缓存使用的单页完整描述槽位
+/// 供跨章翻页手势与矢量缓存使用的单页/对开双页完整描述槽位
 @immutable
 class PageRenderItem {
   const PageRenderItem({
@@ -10,6 +10,10 @@ class PageRenderItem {
     required this.page,
     required this.totalPagesInChapter,
     required this.bookTitle,
+    this.rightPage,
+    this.isDualPage = false,
+    this.spineWidth = 0.0,
+    this.config,
   });
 
   final int chapterIndex;
@@ -17,17 +21,35 @@ class PageRenderItem {
   final TypedPage page;
   final int totalPagesInChapter;
   final String bookTitle;
+  final TypedPage? rightPage;
+  final bool isDualPage;
+  final double spineWidth;
+  final TypographyConfig? config;
 
   int get _contentHash {
     var h = page.lines.length;
     for (final line in page.lines) {
       h = Object.hash(h, line.text);
     }
+    if (rightPage != null) {
+      h = Object.hash(h, rightPage!.lines.length);
+      for (final line in rightPage!.lines) {
+        h = Object.hash(h, line.text);
+      }
+    }
     return h;
   }
 
-  String get cacheKey =>
-      '${chapterIndex}_${page.pageIndex}_${totalPagesInChapter}_${page.charStart}_${page.charEnd}_${chapterTitle.hashCode}_${bookTitle.hashCode}_$_contentHash';
+  String get cacheKey {
+    final rIdx = rightPage?.pageIndex ?? -1;
+    final rEnd = rightPage?.charEnd ?? -1;
+    final spineTag = spineWidth.toStringAsFixed(1);
+    final cfg = config;
+    final typoTag = cfg == null
+        ? ''
+        : '_${cfg.fontFamily ?? ''}_${cfg.paragraphGap}_${cfg.horizontalPadding}_${cfg.letterSpacing}_${cfg.indentFirstLine}';
+    return '${chapterIndex}_${page.pageIndex}_${totalPagesInChapter}_${page.charStart}_${page.charEnd}_${chapterTitle.hashCode}_${bookTitle.hashCode}_${isDualPage ? 1 : 0}_${rIdx}_${rEnd}_${spineTag}_$_contentHash$typoTag';
+  }
 
   @override
   bool operator ==(Object other) {
@@ -36,7 +58,11 @@ class PageRenderItem {
         other.chapterTitle == chapterTitle &&
         other.page == page &&
         other.totalPagesInChapter == totalPagesInChapter &&
-        other.bookTitle == bookTitle;
+        other.bookTitle == bookTitle &&
+        other.rightPage == rightPage &&
+        other.isDualPage == isDualPage &&
+        other.spineWidth == spineWidth &&
+        other.config == config;
   }
 
   @override
@@ -46,6 +72,10 @@ class PageRenderItem {
         page,
         totalPagesInChapter,
         bookTitle,
+        rightPage,
+        isDualPage,
+        spineWidth,
+        config,
       );
 }
 
